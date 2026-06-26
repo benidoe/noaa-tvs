@@ -177,6 +177,8 @@ let isTornadoSirenPlaying = false;
 let isNoaaWarningPlaying = false;
 let lastTornadoCount = 0;
 
+let easAlertSystem = null;
+
 // Function to handle tornado warning sounds
 function handleTornadoWarningSounds() {
     const activeTornadoes = simulationState.tornadoes.filter(t => t.isActive);
@@ -318,6 +320,8 @@ class Tornado {
         this.lastLoftedTime = 0;            // Stores the time when a team was last lofted by this tornado
         this.capeAtFormation = calculateCAPE(); // Store CAPE at time of formation
         this.statsUpdated = false;          // Flag to ensure statistics are updated only once per tornado.
+        this._lastEfRating = -1;           // Track EF rating changes for EAS alerts
+        this._wasActive = true;            // Track active→inactive transition for EAS alerts
         this.rotationOffset = Math.random() * Math.PI * 2; // Unique rotation offset for each tornado
 
         // Calculate target peak wind and width based on CAPE at formation and initial size influence
@@ -404,6 +408,19 @@ class Tornado {
         // Update based on lifecycle and environment
         this.updatePhase();
         this.updateIntensity(cape, shear, helicity); // Pass current environmental values
+
+        // Detect EF rating change for EAS alerts
+        if (this._lastEfRating >= 0 && this.efRating !== this._lastEfRating) {
+            if (easAlertSystem && this.isActive) {
+                if (this.efRating >= 4) {
+                    easAlertSystem.queueAlert('emergency', this);
+                } else if (this.efRating > this._lastEfRating) {
+                    easAlertSystem.queueAlert('update', this);
+                }
+            }
+        }
+        this._lastEfRating = this.efRating;
+
         this.updateMovement();
         this.updatePath();
         this.updateDebris();
@@ -423,6 +440,11 @@ class Tornado {
                     team.targetTornadoId = null;
                     team.isDeployed = false;
                 }
+                // Trigger EAS expired alert
+                if (this._wasActive && easAlertSystem) {
+                    easAlertSystem.queueAlert('expired', this);
+                    this._wasActive = false;
+                }
                 return; // Stop further updates for this tornado
             }
         } else {
@@ -440,7 +462,15 @@ class Tornado {
             }
         }
 
-        // If tornado is inactive (windSpeed < EF0.min already triggered it), and fadeTimer is active, decrement it
+        // Detect tornado dissipation for EAS alerts
+        if (this._wasActive && !this.isActive) {
+            if (easAlertSystem) {
+                easAlertSystem.queueAlert('expired', this);
+            }
+            this._wasActive = false;
+        }
+
+        // If tornado is inactive, and fadeTimer is active, decrement it
         if (!this.isActive && this.fadeTimer > 0) {
             this.fadeTimer -= simulationState.simSpeed;
         }
@@ -866,6 +896,11 @@ class StormCell {
         // Create an alert message in the UI
         createAlert('TORNADO WARNING', `Tornado touchdown detected! ID: ${tornado.id.toString().slice(-4)}`, 'severe');
         simulationState.lastStormActivityTime = simulationState.time; // Update activity time
+
+        // Queue EAS voice alert
+        if (easAlertSystem) {
+            easAlertSystem.queueAlert('warning', tornado);
+        }
     }
 
     /**
@@ -2843,6 +2878,301 @@ document.addEventListener('keydown', (event) => {
     }
 });
 
+// --- Fake City Map Data: Metro County ---
+const METRO_COUNTY = {
+    neighborhoods: [
+        { name: 'Oakwood Heights', cx: 0.15, cy: 0.15, radius: 0.10 },
+        { name: 'Northwood', cx: 0.50, cy: 0.10, radius: 0.09 },
+        { name: 'Prairie View', cx: 0.78, cy: 0.15, radius: 0.10 },
+        { name: 'Meadowbrook', cx: 0.10, cy: 0.45, radius: 0.09 },
+        { name: 'Downtown Metro', cx: 0.50, cy: 0.45, radius: 0.08 },
+        { name: 'Industrial Park', cx: 0.85, cy: 0.45, radius: 0.08 },
+        { name: 'Riverside', cx: 0.25, cy: 0.70, radius: 0.09 },
+        { name: 'Lakewood Estates', cx: 0.72, cy: 0.72, radius: 0.10 },
+        { name: 'Southgate', cx: 0.50, cy: 0.82, radius: 0.08 },
+        { name: 'Cedar Creek', cx: 0.82, cy: 0.82, radius: 0.08 },
+    ],
+    river: [
+        { x: 0.48, y: 0.00 }, { x: 0.45, y: 0.12 },
+        { x: 0.52, y: 0.25 }, { x: 0.47, y: 0.38 },
+        { x: 0.50, y: 0.50 }, { x: 0.48, y: 0.65 },
+        { x: 0.53, y: 0.80 }, { x: 0.50, y: 1.00 },
+    ],
+    roads: [
+        { type: 'highway', label: 'I-44', points: [{ x: 0, y: 0.40 }, { x: 0.25, y: 0.38 }, { x: 0.50, y: 0.40 }, { x: 0.75, y: 0.39 }, { x: 1, y: 0.41 }] },
+        { type: 'highway', label: 'SH-9', points: [{ x: 0.35, y: 0 }, { x: 0.36, y: 0.50 }, { x: 0.35, y: 1 }] },
+        { type: 'road', points: [{ x: 0, y: 0.25 }, { x: 1, y: 0.25 }] },
+        { type: 'road', points: [{ x: 0, y: 0.55 }, { x: 1, y: 0.55 }] },
+        { type: 'road', points: [{ x: 0, y: 0.70 }, { x: 1, y: 0.70 }] },
+        { type: 'road', points: [{ x: 0.20, y: 0 }, { x: 0.20, y: 1 }] },
+        { type: 'road', points: [{ x: 0.65, y: 0 }, { x: 0.65, y: 1 }] },
+        { type: 'street', points: [{ x: 0.40, y: 0.35 }, { x: 0.60, y: 0.35 }] },
+        { type: 'street', points: [{ x: 0.40, y: 0.50 }, { x: 0.60, y: 0.50 }] },
+        { type: 'street', points: [{ x: 0.40, y: 0.35 }, { x: 0.40, y: 0.50 }] },
+        { type: 'street', points: [{ x: 0.60, y: 0.35 }, { x: 0.60, y: 0.50 }] },
+    ],
+    landmarks: [
+        { name: 'Memorial Hospital', x: 0.42, y: 0.38, icon: 'H' },
+        { name: 'State University', x: 0.20, y: 0.55, icon: 'U' },
+        { name: 'Riverbend Mall', x: 0.62, y: 0.55, icon: 'M' },
+        { name: 'Metro County Airport', x: 0.55, y: 0.88, icon: 'A' },
+    ],
+    lake: { x: 0.85, y: 0.85, rx: 0.08, ry: 0.05 },
+};
+
+function drawCityMap() {
+    const w = canvas.width;
+    const h = canvas.height;
+
+    // Background — farmland
+    ctx.fillStyle = '#d4c9a8';
+    ctx.fillRect(0, 0, w, h);
+
+    // Slight field patterns
+    ctx.fillStyle = '#cdc29e';
+    for (let i = 0; i < 20; i++) {
+        const fx = (Math.sin(i * 37.7) * 0.5 + 0.5) * w;
+        const fy = (Math.cos(i * 53.1) * 0.5 + 0.5) * h;
+        ctx.fillRect(fx - 30, fy - 30, 60, 60);
+    }
+
+    // River
+    ctx.beginPath();
+    const rv = METRO_COUNTY.river;
+    ctx.moveTo(rv[0].x * w, rv[0].y * h);
+    for (let i = 1; i < rv.length; i++) {
+        ctx.lineTo(rv[i].x * w, rv[i].y * h);
+    }
+    ctx.strokeStyle = '#3a7bd5';
+    ctx.lineWidth = 14;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.stroke();
+
+    // Lake
+    const lk = METRO_COUNTY.lake;
+    ctx.beginPath();
+    ctx.ellipse(lk.x * w, lk.y * h, lk.rx * w, lk.ry * h, 0, 0, Math.PI * 2);
+    ctx.fillStyle = '#3a7bd5';
+    ctx.fill();
+
+    // Roads
+    METRO_COUNTY.roads.forEach(road => {
+        const pts = road.points;
+        if (road.type === 'highway') {
+            ctx.beginPath();
+            ctx.moveTo(pts[0].x * w, pts[0].y * h);
+            for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x * w, pts[i].y * h);
+            ctx.strokeStyle = '#666';
+            ctx.lineWidth = 10;
+            ctx.lineCap = 'round';
+            ctx.lineJoin = 'round';
+            ctx.stroke();
+
+            ctx.beginPath();
+            ctx.moveTo(pts[0].x * w, pts[0].y * h);
+            for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x * w, pts[i].y * h);
+            ctx.strokeStyle = '#c8a84e';
+            ctx.lineWidth = 2;
+            ctx.setLineDash([8, 10]);
+            ctx.stroke();
+            ctx.setLineDash([]);
+
+            const mid = Math.floor(pts.length / 2);
+            ctx.fillStyle = '#fff';
+            ctx.font = 'bold 11px Arial';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'bottom';
+            ctx.fillText(road.label, pts[mid].x * w, pts[mid].y * h - 12);
+        } else {
+            ctx.beginPath();
+            ctx.moveTo(pts[0].x * w, pts[0].y * h);
+            for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x * w, pts[i].y * h);
+            ctx.strokeStyle = road.type === 'road' ? '#bbb' : '#ccc';
+            ctx.lineWidth = road.type === 'road' ? 3 : 1.5;
+            ctx.stroke();
+        }
+    });
+
+    // Neighborhood labels
+    METRO_COUNTY.neighborhoods.forEach(n => {
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.15)';
+        ctx.font = '11px Arial';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(n.name, n.cx * w, n.cy * h);
+    });
+
+    // Landmarks
+    METRO_COUNTY.landmarks.forEach(lm => {
+        const x = lm.x * w;
+        const y = lm.y * h;
+        ctx.fillStyle = '#8B0000';
+        ctx.fillRect(x - 9, y - 9, 18, 18);
+        ctx.fillStyle = 'white';
+        ctx.font = 'bold 11px Arial';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(lm.icon, x, y);
+        ctx.fillStyle = '#222';
+        ctx.font = '8px Arial';
+        ctx.textBaseline = 'top';
+        ctx.fillText(lm.name, x, y + 11);
+    });
+
+    // County boundary
+    ctx.strokeStyle = 'rgba(139, 69, 19, 0.4)';
+    ctx.lineWidth = 3;
+    ctx.setLineDash([10, 6]);
+    ctx.strokeRect(5, 5, w - 10, h - 10);
+    ctx.setLineDash([]);
+    ctx.fillStyle = 'rgba(139, 69, 19, 0.6)';
+    ctx.font = 'bold 10px Arial';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    ctx.fillText('METRO COUNTY', 10, 8);
+}
+
+/**
+ * Finds the nearest neighborhood name for a given canvas position.
+ */
+function getNeighborhood(x, y) {
+    let closest = 'Metro County';
+    let minDist = Infinity;
+    METRO_COUNTY.neighborhoods.forEach(n => {
+        const dx = (x / canvas.width) - n.cx;
+        const dy = (y / canvas.height) - n.cy;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist < minDist) {
+            minDist = dist;
+            closest = n.name;
+        }
+    });
+    return closest;
+}
+
+// --- EAS Alert System ---
+class EASAlertSystem {
+    constructor() {
+        this.queue = [];
+        this.playing = false;
+        this.bannerTimeout = null;
+    }
+
+    async queueAlert(type, tornado) {
+        const text = this.composeText(type, tornado);
+        this.queue.push({ type, text, tornadoId: tornado.id });
+        if (!this.playing) {
+            await this.processQueue();
+        }
+    }
+
+    async processQueue() {
+        if (this.queue.length === 0) {
+            this.playing = false;
+            return;
+        }
+        this.playing = true;
+        const alert = this.queue.shift();
+
+        this.showBanner(alert);
+
+        try {
+            const res = await fetch('/.netlify/functions/eas-tts', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text: alert.text })
+            });
+
+            if (!res.ok) throw new Error('TTS proxy error');
+
+            const blob = await res.blob();
+            const url = URL.createObjectURL(blob);
+            const audio = new Audio(url);
+
+            audio.onended = () => {
+                URL.revokeObjectURL(url);
+                this.hideBanner();
+                setTimeout(() => this.processQueue(), 600);
+            };
+            audio.onerror = () => {
+                URL.revokeObjectURL(url);
+                this.hideBanner();
+                setTimeout(() => this.processQueue(), 600);
+            };
+
+            await audio.play();
+        } catch {
+            this.hideBannerAfterDelay(6000);
+            setTimeout(() => this.processQueue(), 1000);
+        }
+    }
+
+    showBanner(alert) {
+        const overlay = document.getElementById('easOverlay');
+        const header = document.getElementById('easHeaderText');
+        const message = document.getElementById('easBodyMessage');
+        const footer = document.getElementById('easFooterScroll');
+
+        let headerText;
+        switch (alert.type) {
+            case 'warning': headerText = 'TORNADO WARNING'; break;
+            case 'emergency': headerText = 'TORNADO EMERGENCY'; break;
+            case 'update': headerText = 'TORNADO WARNING UPDATE'; break;
+            case 'expired': headerText = 'TORNADO WARNING EXPIRED'; break;
+            default: headerText = 'TORNADO WARNING';
+        }
+
+        header.textContent = headerText;
+        message.textContent = alert.text;
+        footer.textContent = ' *** ' + alert.text + ' *** ';
+        overlay.style.display = 'flex';
+    }
+
+    hideBanner() {
+        const overlay = document.getElementById('easOverlay');
+        overlay.style.display = 'none';
+        if (this.bannerTimeout) {
+            clearTimeout(this.bannerTimeout);
+            this.bannerTimeout = null;
+        }
+    }
+
+    hideBannerAfterDelay(ms) {
+        if (this.bannerTimeout) clearTimeout(this.bannerTimeout);
+        this.bannerTimeout = setTimeout(() => this.hideBanner(), ms);
+    }
+
+    composeText(type, tornado) {
+        const neighborhood = getNeighborhood(tornado.x, tornado.y);
+        const dir = getCompassDirection(tornado.direction);
+        const speed = Math.max(10, (tornado.speed * 60 * 5)).toFixed(0);
+        const now = new Date();
+        const time = now.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+        const until = new Date(now.getTime() + 30 * 60 * 1000).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+
+        switch (type) {
+            case 'warning':
+                return `The National Weather Service in Metro County has issued a Tornado Warning for ${neighborhood} in Metro County until ${until}. At ${time}, a confirmed tornado was located near ${neighborhood}, moving ${dir} at ${speed} mph. HAZARD... Damaging tornado. SOURCE... Radar confirmed rotation. IMPACT... Flying debris will be dangerous to those caught without shelter. Mobile homes will be damaged or destroyed. Damage to roofs, windows, and vehicles will occur. Tree damage is likely. PRECAUTIONARY PREPAREDNESS ACTIONS... TAKE COVER NOW! Move to an interior room on the lowest floor of a sturdy building. Avoid windows. If in a mobile home or vehicle, move to the closest substantial shelter and protect yourself from flying debris.`;
+
+            case 'emergency':
+                return `TORNADO EMERGENCY FOR ${neighborhood}. The National Weather Service in Metro County has issued a Tornado Warning for ${neighborhood} in Metro County until ${until}. At ${time}, a large and extremely dangerous tornado was located near ${neighborhood}, moving ${dir} at ${speed} mph. This is a TORNADO EMERGENCY for ${neighborhood}. This is a PARTICULARLY DANGEROUS SITUATION. TAKE COVER NOW! Move to an interior room on the lowest floor of a well built building. If in a mobile home or vehicle, move to the closest structure and protect yourself from flying debris.`;
+
+            case 'update':
+                return `...A TORNADO WARNING REMAINS IN EFFECT UNTIL ${until} FOR ${neighborhood}. At ${time}, a confirmed tornado was located near ${neighborhood}, moving ${dir} at ${speed} mph. HAZARD... Damaging tornado. SOURCE... Radar confirmed rotation. IMPACT... Flying debris will be dangerous. TAKE COVER NOW!`;
+
+            case 'expired':
+                return `The Tornado Warning for ${neighborhood} has expired. The storm which prompted the warning has weakened and is no longer capable of producing a tornado. Therefore the warning has been allowed to expire. A Tornado Watch remains in effect until ${until} for Metro County.`;
+
+            default:
+                return `A Tornado Warning has been issued for ${neighborhood}. TAKE COVER NOW!`;
+        }
+    }
+}
+
+// Initialize EAS alert system
+easAlertSystem = new EASAlertSystem();
+
 // --- Main Simulation Loop ---
 let animationFrameId; // Stores the ID of the current animation frame request
 
@@ -2967,6 +3297,9 @@ function animate() {
 
     // Clear canvas
     ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    // Draw city map background
+    drawCityMap();
 
     // Draw immersive effects (order matters for layering)
     drawWindyEffect(); // Draw wind lines first

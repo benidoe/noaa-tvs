@@ -570,3 +570,128 @@ option:disabled {
     cursor: not-allowed;
 }
 
+/* EAS Alert Banner Overlay */
+.eas-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    z-index: 200;
+    background: rgba(0, 0, 0, 0.7);
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    pointer-events: none;
+    animation: easFadeIn 0.3s ease-out;
+}
+
+@keyframes easFadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+.eas-header {
+    position: absolute;
+    top: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: #cc0000;
+    color: white;
+    padding: 8px 30px;
+    border-radius: 4px;
+    font-family: 'Courier New', monospace;
+    font-weight: bold;
+    font-size: 22px;
+    letter-spacing: 3px;
+    text-align: center;
+    border: 2px solid #ffcc00;
+    box-shadow: 0 0 20px rgba(255, 0, 0, 0.5);
+    white-space: nowrap;
+    display: flex;
+    align-items: center;
+    gap: 15px;
+}
+
+.eas-header-icon {
+    color: #ffcc00;
+    font-size: 18px;
+}
+
+.eas-body {
+    background: #0a2a5e;
+    border: 3px solid #ffcc00;
+    border-radius: 8px;
+    padding: 30px 40px;
+    max-width: 800px;
+    width: 90%;
+    box-shadow: 0 0 40px rgba(10, 42, 94, 0.8);
+    text-align: center;
+}
+
+.eas-body-content {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+}
+
+.eas-body-label {
+    font-family: 'Courier New', monospace;
+    font-weight: bold;
+    font-size: 14px;
+    color: #ffcc00;
+    letter-spacing: 2px;
+}
+
+.eas-body-message {
+    font-family: 'Courier New', monospace;
+    font-size: 18px;
+    color: white;
+    line-height: 1.6;
+    text-align: center;
+}
+
+.eas-footer {
+    position: absolute;
+    bottom: 60px;
+    left: 0;
+    width: 100%;
+    background: #0a2a5e;
+    border-top: 2px solid #ffcc00;
+    border-bottom: 2px solid #ffcc00;
+    overflow: hidden;
+    height: 36px;
+    display: flex;
+    align-items: center;
+}
+
+.eas-footer-scroll {
+    font-family: 'Courier New', monospace;
+    font-size: 16px;
+    color: white;
+    white-space: nowrap;
+    padding: 0 20px;
+    animation: easScroll 20s linear infinite;
+}
+
+@keyframes easScroll {
+    0% { transform: translateX(100vw); }
+    100% { transform: translateX(-100%); }
+}
+
+@media (max-width: 768px) {
+    .eas-header {
+        font-size: 16px;
+        padding: 6px 15px;
+        top: 10px;
+    }
+    .eas-body {
+        padding: 20px;
+    }
+    .eas-body-message {
+        font-size: 14px;
+    }
+}
+
