@@ -56,7 +56,8 @@ let simulationState = {
 
     // Simulation clock (1 sim minute per real second, starts at 12:00 PM = 720 minutes since midnight)
     simClock: 720,
-    _clockFrameCounter: 0,
+    _lastClockTime: 0,
+    _clockAccumulator: 0,
 
     // Camera for pan/zoom
     camera: { x: 0, y: 0, zoom: 1 },
@@ -183,11 +184,10 @@ const SOUNDS = {
     tornadoSiren: new Audio('audio/tornado_siren.mp3'),
     noaaWarning: new Audio('audio/noaa_warning.mp3')
 };
+SOUNDS.tornadoSiren.loop = true;
 
 // Sound state tracking
 let isTornadoSirenPlaying = false;
-let isNoaaWarningPlaying = false;
-let lastTornadoCount = 0;
 
 let easAlertSystem = null;
 
@@ -196,19 +196,19 @@ function handleTornadoWarningSounds() {
     const activeTornadoes = simulationState.tornadoes.filter(t => t.isActive);
     const currentTornadoCount = activeTornadoes.length;
 
-    if (currentTornadoCount > 0 && lastTornadoCount === 0) {
-        SOUNDS.tornadoSiren.volume = 0.68;
-        SOUNDS.tornadoSiren.play();
-        isTornadoSirenPlaying = true;
+    if (currentTornadoCount > 0) {
+        if (!isTornadoSirenPlaying) {
+            SOUNDS.tornadoSiren.volume = 0.68;
+            SOUNDS.tornadoSiren.play();
+            isTornadoSirenPlaying = true;
+        }
+    } else {
+        if (isTornadoSirenPlaying) {
+            SOUNDS.tornadoSiren.pause();
+            SOUNDS.tornadoSiren.currentTime = 0;
+            isTornadoSirenPlaying = false;
+        }
     }
-
-    if (currentTornadoCount === 0 && lastTornadoCount > 0 && isTornadoSirenPlaying) {
-        SOUNDS.tornadoSiren.pause();
-        SOUNDS.tornadoSiren.currentTime = 0;
-        isTornadoSirenPlaying = false;
-    }
-
-    lastTornadoCount = currentTornadoCount;
 }
 
 // Canvas element references and contexts - Declared globally, assigned in window.onload
@@ -436,7 +436,7 @@ class Tornado {
         this.updateDebris();
 
         // Check for forced dissipation if stuck in a low wind speed state
-        if (this.phase === TORNADO_PHASES.DISSIPATING || this.windSpeed < EF_WIND_RANGES[0].min * 0.8) { 
+        if (this.phase === TORNADO_PHASES.DISSIPATING) {
             this.dissipationStallCounter += simulationState.simSpeed;
             if (this.dissipationStallCounter >= DISSIPATING_DURATION_FRAMES) { // Use constant for force dissipate time
                 this.isActive = false;
@@ -1511,6 +1511,29 @@ function screenToWorld(screenX, screenY) {
         x: screenX / simulationState.camera.zoom + simulationState.camera.x,
         y: screenY / simulationState.camera.zoom + simulationState.camera.y
     };
+}
+
+/**
+ * Clamps camera position so the viewport never shows empty space beyond the map.
+ * Map extents are 2x canvas size to allow room to pan.
+ */
+function clampCamera() {
+    const c = simulationState.camera;
+    const mapW = canvas.width * 2;
+    const mapH = canvas.height * 2;
+    const viewW = canvas.width / c.zoom;
+    const viewH = canvas.height / c.zoom;
+
+    if (viewW >= mapW) {
+        c.x = 0;
+    } else {
+        c.x = Math.max(0, Math.min(mapW - viewW, c.x));
+    }
+    if (viewH >= mapH) {
+        c.y = 0;
+    } else {
+        c.y = Math.max(0, Math.min(mapH - viewH, c.y));
+    }
 }
 
 /**
@@ -2652,12 +2675,14 @@ function resetSimulation() {
 
     // Reset clock
     simulationState.simClock = 720;
-    simulationState._clockFrameCounter = 0;
+    simulationState._lastClockTime = 0;
+    simulationState._clockAccumulator = 0;
 
     // Reset camera
     simulationState.camera.x = 0;
     simulationState.camera.y = 0;
     simulationState.camera.zoom = 1;
+    clampCamera();
     simulationState._dragStartX = null;
     simulationState._dragStartY = null;
     simulationState._isDragging = false;
@@ -2710,13 +2735,6 @@ function resetSimulation() {
         SOUNDS.tornadoSiren.currentTime = 0;
         isTornadoSirenPlaying = false;
     }
-    if (isNoaaWarningPlaying) {
-        SOUNDS.noaaWarning.pause();
-        SOUNDS.noaaWarning.currentTime = 0;
-        isNoaaWarningPlaying = false;
-    }
-    lastTornadoCount = 0;
-
     // Restart animation loop
     if (!animationFrameId) {
         requestAnimationFrame(animate);
@@ -2988,18 +3006,57 @@ const METRO_COUNTY = {
 function drawCityMap() {
     const w = canvas.width;
     const h = canvas.height;
+    const mapW = w * 2;
+    const mapH = h * 2;
 
-    // Background — farmland
+    // Extended background — farmland covering all possible visible areas at any zoom
     ctx.fillStyle = '#d4c9a8';
-    ctx.fillRect(0, 0, w, h);
+    ctx.fillRect(-w * 2, -h * 2, mapW + 4 * w, mapH + 4 * h);
 
-    // Slight field patterns
+    // Extended field patterns
     ctx.fillStyle = '#cdc29e';
-    for (let i = 0; i < 20; i++) {
-        const fx = (Math.sin(i * 37.7) * 0.5 + 0.5) * w;
-        const fy = (Math.cos(i * 53.1) * 0.5 + 0.5) * h;
+    for (let i = 0; i < 60; i++) {
+        const fx = (Math.sin(i * 37.7) * 0.5 + 0.5) * mapW;
+        const fy = (Math.cos(i * 53.1) * 0.5 + 0.5) * mapH;
         ctx.fillRect(fx - 30, fy - 30, 60, 60);
     }
+
+    // Adjacent county grid marks (beyond the main city area)
+    ctx.strokeStyle = 'rgba(139, 69, 19, 0.2)';
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([8, 8]);
+    for (let gx = 0; gx <= mapW; gx += w) {
+        ctx.beginPath();
+        ctx.moveTo(gx, 0);
+        ctx.lineTo(gx, mapH);
+        ctx.stroke();
+    }
+    for (let gy = 0; gy <= mapH; gy += h) {
+        ctx.beginPath();
+        ctx.moveTo(0, gy);
+        ctx.lineTo(mapW, gy);
+        ctx.stroke();
+    }
+    ctx.setLineDash([]);
+
+    // Label adjacent counties
+    ctx.fillStyle = 'rgba(139, 69, 19, 0.3)';
+    ctx.font = 'bold 9px Arial';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    const adjacentCounties = [
+        { name: 'NORTH METRO', cx: w, cy: h * 0.5 },
+        { name: 'EAST METRO', cx: w * 1.5, cy: h },
+        { name: 'SOUTH METRO', cx: w, cy: h * 1.5 },
+        { name: 'WEST METRO', cx: w * 0.5, cy: h },
+        { name: 'NW COUNTY', cx: w * 0.5, cy: h * 0.5 },
+        { name: 'NE COUNTY', cx: w * 1.5, cy: h * 0.5 },
+        { name: 'SE COUNTY', cx: w * 1.5, cy: h * 1.5 },
+        { name: 'SW COUNTY', cx: w * 0.5, cy: h * 1.5 },
+    ];
+    adjacentCounties.forEach(c => {
+        ctx.fillText(c.name, c.cx, c.cy);
+    });
 
     // River
     ctx.beginPath();
@@ -3326,10 +3383,18 @@ function animate() {
     if (!simulationState.paused) {
         simulationState.time += simulationState.simSpeed;
 
-        // Update simulation clock (1 sim minute per 60 real frames)
-        simulationState._clockFrameCounter += simulationState.simSpeed;
-        if (simulationState._clockFrameCounter >= 60) {
-            simulationState._clockFrameCounter -= 60;
+        // Update simulation clock (1 sim minute per real second, frame-rate independent)
+        const now = performance.now();
+        if (simulationState._lastClockTime === 0) {
+            simulationState._lastClockTime = now;
+        }
+        let delta = now - simulationState._lastClockTime;
+        simulationState._lastClockTime = now;
+        // Clamp delta to avoid clock jumps after pause/resume or tab switches
+        if (delta > 500) delta = 0;
+        simulationState._clockAccumulator += delta * simulationState.simSpeed;
+        while (simulationState._clockAccumulator >= 1000) {
+            simulationState._clockAccumulator -= 1000;
             simulationState.simClock++;
         }
     }
@@ -3629,6 +3694,7 @@ window.onload = function () {
         }
         simulationState.camera.x -= dx / simulationState.camera.zoom;
         simulationState.camera.y -= dy / simulationState.camera.zoom;
+        clampCamera();
         simulationState._dragStartX = e.clientX;
         simulationState._dragStartY = e.clientY;
         e.preventDefault();
@@ -3652,6 +3718,7 @@ window.onload = function () {
         simulationState.camera.zoom = newZoom;
         simulationState.camera.x = wx - mx / newZoom;
         simulationState.camera.y = wy - my / newZoom;
+        clampCamera();
     }, { passive: false });
 
     // EAS close button
@@ -3665,6 +3732,7 @@ window.onload = function () {
             simulationState.camera.x = 0;
             simulationState.camera.y = 0;
             simulationState.camera.zoom = 1;
+            clampCamera();
         }
     });
 

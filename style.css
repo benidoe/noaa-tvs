@@ -489,12 +489,14 @@ option:disabled {
 
 /* Version display */
 .version-display {
-    position: absolute;
+    position: fixed;
     bottom: 10px;
     right: 10px;
     font-size: 10px;
-    color: rgba(255, 255, 255, 0.4); /* Subtle text */
-    pointer-events: none; /* Make it non-interactive */
+    color: rgba(255, 255, 255, 0.4);
+    pointer-events: none;
+    z-index: 9999;
+    user-select: none;
 }
 
 /* Compass Rose Styling */
@@ -723,7 +725,7 @@ option:disabled {
 /* Simulation Clock Display */
 .clock-display {
     position: fixed;
-    bottom: 45px;
+    bottom: 70px;
     left: 15px;
     background: rgba(0, 0, 0, 0.7);
     color: #4fc3f7;
