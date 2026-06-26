@@ -193,7 +193,10 @@ let easAlertSystem = null;
 
 // Function to handle tornado siren only (EAS TTS/tones handled by EASAlertSystem)
 function handleTornadoWarningSounds() {
-    const activeTornadoes = simulationState.tornadoes.filter(t => t.isActive);
+    // Include fading tornadoes so siren doesn't cut off during dissipate phase
+    const activeTornadoes = simulationState.tornadoes.filter(t =>
+        t.isActive || (t.fadeTimer !== undefined && t.fadeTimer > 0)
+    );
     const currentTornadoCount = activeTornadoes.length;
 
     if (currentTornadoCount > 0) {
@@ -677,8 +680,8 @@ class Tornado {
             // Point towards the center in X, with a random wobble
             this.direction = Math.atan2(Math.sin(this.direction), Math.abs(Math.cos(this.direction))); 
             redirected = true;
-        } else if (this.x > canvas.width - edgeBuffer) {
-            this.x = canvas.width - edgeBuffer;
+        } else if (this.x > canvas.width * 2 - edgeBuffer) {
+            this.x = canvas.width * 2 - edgeBuffer;
             // Point towards the center in X, with a random wobble
             this.direction = Math.atan2(Math.sin(this.direction), -Math.abs(Math.cos(this.direction)));
             redirected = true;
@@ -689,8 +692,8 @@ class Tornado {
             // Point towards the center in Y, with a random wobble
             this.direction = Math.atan2(Math.abs(Math.sin(this.direction)), Math.cos(this.direction)); 
             redirected = true;
-        } else if (this.y > canvas.height - edgeBuffer) {
-            this.y = canvas.height - edgeBuffer;
+        } else if (this.y > canvas.height * 2 - edgeBuffer) {
+            this.y = canvas.height * 2 - edgeBuffer;
             // Point towards the center in Y, with a random wobble
             this.direction = Math.atan2(-Math.abs(Math.sin(this.direction)), Math.cos(this.direction));
             redirected = true;
@@ -751,7 +754,7 @@ class Tornado {
             particle.life--;
             
             // Respawn debris if its lifespan ends or it goes too far off-screen
-            if (particle.life <= 0 || particle.y > canvas.height + 100 || particle.x < -100 || particle.x > canvas.width + 100) {
+            if (particle.life <= 0 || particle.y > canvas.height * 2 + 100 || particle.x < -100 || particle.x > canvas.width * 2 + 100) {
                 particle.x = this.x + (Math.random() - 0.5) * this.width * 0.8; // Respawn near tornado
                 particle.y = this.y + (Math.random() - 0.5) * this.width * 0.8;
                 particle.vx = (Math.random() - 0.5) * 5;
@@ -1231,8 +1234,8 @@ class InterceptTeam {
                 this.loftVy *= 0.98;
                 this.loftRotation += this.loftRotationSpeed * simulationState.simSpeed; // Apply rotation
 
-                // Deactivate once off screen
-                if (this.y > canvas.height + 100 || this.y < -100 || this.x > canvas.width + 100 || this.x < -100) {
+                // Deactivate once off the expanded map
+                if (this.y > canvas.height * 2 + 100 || this.y < -100 || this.x > canvas.width * 2 + 100 || this.x < -100) {
                     this.isActive = false; // Off screen, effectively lost
                 }
                 break;
@@ -1470,16 +1473,9 @@ function updateSliderDisplays() {
  * @returns {string} The compass direction (N, NE, E, SE, S, SW, W, NW).
  */
 function getCompassDirection(angleRad) {
-    // Normalize angle to be between 0 and 2*PI
     let normalizedAngle = (angleRad + 2 * Math.PI) % (2 * Math.PI);
-
-    // Convert to degrees, rotating so 0 degrees is North (up)
-    // A standard Cartesian angle (0 right, increases counter-clockwise) needs adjustment.
-    // Math.atan2(dy, dx) returns angle where dy is positive downwards (South).
-    // North is -90deg or 270deg. East is 0deg. South is 90deg. West is 180deg.
-    // To align with compass directions (0deg North, 90deg East, 180deg South, 270deg West):
     let angleDeg = normalizedAngle * 180 / Math.PI;
-    angleDeg = (angleDeg + 90 + 360) % 360; // Rotate 90 degrees clockwise and ensure positive
+    angleDeg = (angleDeg + 90 + 360) % 360;
 
     if (angleDeg >= 337.5 || angleDeg < 22.5) return "N";
     if (angleDeg >= 22.5 && angleDeg < 67.5) return "NE";
@@ -1491,6 +1487,8 @@ function getCompassDirection(angleRad) {
     if (angleDeg >= 292.5 && angleDeg < 337.5) return "NW";
     return "N/A";
 }
+
+const COMPASS_FULL = { N: 'north', NE: 'northeast', E: 'east', SE: 'southeast', S: 'south', SW: 'southwest', W: 'west', NW: 'northwest', 'N/A': 'north' };
 
 /**
  * Formats simulation clock minutes since midnight to a time string.
@@ -1516,6 +1514,7 @@ function screenToWorld(screenX, screenY) {
 /**
  * Clamps camera position so the viewport never shows empty space beyond the map.
  * Map extents are 2x canvas size to allow room to pan.
+ * When zoomed out past the map bounds, centers the map in the viewport.
  */
 function clampCamera() {
     const c = simulationState.camera;
@@ -1525,12 +1524,12 @@ function clampCamera() {
     const viewH = canvas.height / c.zoom;
 
     if (viewW >= mapW) {
-        c.x = 0;
+        c.x = (mapW - viewW) / 2;
     } else {
         c.x = Math.max(0, Math.min(mapW - viewW, c.x));
     }
     if (viewH >= mapH) {
-        c.y = 0;
+        c.y = (mapH - viewH) / 2;
     } else {
         c.y = Math.max(0, Math.min(mapH - viewH, c.y));
     }
@@ -1763,8 +1762,8 @@ function drawRadar() {
     // Draw storm cells on the radar
     simulationState.storms.forEach(storm => {
         // Map storm position from main canvas to radar canvas
-        const radarX = (storm.x / canvas.width) * radarCanvas.width;
-        const radarY = (storm.y / canvas.height) * radarCanvas.height;
+        const radarX = (storm.x / (canvas.width * 2)) * radarCanvas.width;
+        const radarY = (storm.y / (canvas.height * 2)) * radarCanvas.height;
         const radarSize = storm.size * 0.2; // Scale down storm size for radar display
         
         const alpha = Math.min(1, storm.intensity); // Transparency based on storm intensity
@@ -1802,8 +1801,8 @@ function drawRadar() {
     simulationState.tornadoes.forEach(tornado => {
         // Only draw if active or still fading. The filter in `animate` will remove it completely when fadeTimer <= 0.
         if (tornado.isActive || (tornado.fadeTimer !== undefined && tornado.fadeTimer > 0)) {
-            const radarX = (tornado.x / canvas.width) * radarCanvas.width;
-            const radarY = (tornado.y / canvas.height) * radarCanvas.height;
+            const radarX = (tornado.x / (canvas.width * 2)) * radarCanvas.width;
+            const radarY = (tornado.y / (canvas.height * 2)) * radarCanvas.height;
             const tornadoRadarSize = 4; // Smaller size for tornadoes on radar
 
             let tornadoAlpha = 1;
@@ -1898,14 +1897,16 @@ function drawVorticityField() {
  * Draws rain particles on the canvas. The intensity of rain depends on `simulationState.currentRainIntensity`.
  */
 function drawRain() {
-    if (simulationState.currentRainIntensity <= 0.01) return; // Don't draw if too faint
+    const intensity = simulationState.currentRainIntensity;
+    const alpha = intensity * 0.8;
+    if (alpha < 0.002) return;
 
-    const numRaindrops = RAIN_PARTICLES_BASE * simulationState.currentRainIntensity;
-    const raindropLength = 10 + simulationState.currentRainIntensity * 20; // Longer, thicker raindrops for stronger rain
-    const raindropSpeed = 8 + simulationState.currentRainIntensity * 10; // Faster for stronger rain
+    const numRaindrops = RAIN_PARTICLES_BASE * intensity;
+    const raindropLength = 10 + intensity * 20;
+    const raindropSpeed = 8 + intensity * 10;
 
-    ctx.strokeStyle = `rgba(173, 216, 230, ${simulationState.currentRainIntensity * 0.8})`; // Light blue, fades with intensity
-    ctx.lineWidth = 2 + simulationState.currentRainIntensity * 3; // Thicker lines for raindrops
+    ctx.strokeStyle = `rgba(173, 216, 230, ${alpha})`;
+    ctx.lineWidth = 2 + intensity * 3;
 
     for (let i = 0; i < numRaindrops; i++) {
         // Persistent raindrops (recycle positions)
@@ -1923,13 +1924,15 @@ function drawRain() {
  * Draws hail particles on the canvas. The intensity of hail depends on `simulationState.currentHailIntensity`.
  */
 function drawHail() {
-    if (simulationState.currentHailIntensity <= 0.01) return;
+    const intensity = simulationState.currentHailIntensity;
+    const alpha = intensity * 0.9;
+    if (alpha < 0.002) return;
 
-    const numHailstones = HAIL_PARTICLES_BASE * simulationState.currentHailIntensity;
-    const hailstoneSize = 3 + simulationState.currentHailIntensity * 5; // Larger hail for stronger intensity
-    const hailstoneSpeed = 5 + simulationState.currentHailIntensity * 10; // Faster for stronger intensity
+    const numHailstones = HAIL_PARTICLES_BASE * intensity;
+    const hailstoneSize = 3 + intensity * 5;
+    const hailstoneSpeed = 5 + intensity * 10;
 
-    ctx.fillStyle = `rgba(255, 255, 255, ${simulationState.currentHailIntensity * 0.9})`; // White, slightly opaque
+    ctx.fillStyle = `rgba(255, 255, 255, ${alpha})`;
     
     for (let i = 0; i < numHailstones; i++) {
         let x = (Math.random() * canvas.width + simulationState.time * hailstoneSpeed * 0.5) % canvas.width;
@@ -1972,7 +1975,7 @@ function drawLightning(x, y, intensity) {
         currentY += Math.random() * 30 + 10; // Vertical segment length
         
         // Clamp X within canvas bounds to avoid drawing off-screen
-        currentX = Math.max(0, Math.min(canvas.width, currentX));
+        currentX = Math.max(0, Math.min(canvas.width * 2, currentX));
 
         ctx.lineTo(currentX, currentY);
     }
@@ -2220,9 +2223,9 @@ function handleSimulationAreaClick(event) {
         
         const stormSize = minSize + Math.random() * (maxSize - minSize);
 
-        // Adjust clickX and clickY to ensure storm is within bounds
-        clickX = Math.max(stormSize, Math.min(canvas.width - stormSize, clickX));
-        clickY = Math.max(stormSize, Math.min(canvas.height - stormSize, clickY));
+        // Adjust clickX and clickY to ensure storm is within bounds (expanded 2x world)
+        clickX = Math.max(stormSize, Math.min(canvas.width * 2 - stormSize, clickX));
+        clickY = Math.max(stormSize, Math.min(canvas.height * 2 - stormSize, clickY));
 
         const storm = new StormCell(clickX, clickY, false);
         storm.intensity = 0.3 + (cape / MAX_CAPE) * 0.4; // Intensity based on CAPE
@@ -2410,9 +2413,9 @@ function spawnSupercell(autoSpawn = false) { // Added autoSpawn flag
     const supercellBaseSize = minSupercellSize + Math.random() * (maxSupercellSize - minSupercellSize);
 
     // Ensure the supercell spawns fully within the canvas bounds
-    const buffer = supercellBaseSize + 10; // Add some buffer for visibility
-    const x = buffer + Math.random() * (canvas.width - 2 * buffer);
-    const y = buffer + Math.random() * (canvas.height - 2 * buffer);
+    const buffer = supercellBaseSize + 10;
+    const x = buffer + Math.random() * (canvas.width * 2 - 2 * buffer);
+    const y = buffer + Math.random() * (canvas.height * 2 - 2 * buffer);
     
     const supercell = new StormCell(x, y, true);
     // Supercell intensity is also influenced by environmental controls
@@ -2464,8 +2467,8 @@ function triggerOutbreak(autoSpawn = false) { // Added autoSpawn flag
                 
                 // Ensure storm spawns fully within the canvas bounds
                 const buffer = stormSize + 10;
-                const x = buffer + Math.random() * (canvas.width - 2 * buffer);
-                const y = buffer + Math.random() * (canvas.height - 2 * buffer);
+                const x = buffer + Math.random() * (canvas.width * 2 - 2 * buffer);
+                const y = buffer + Math.random() * (canvas.height * 2 - 2 * buffer);
 
                 const storm = new StormCell(x, y, isSupercellOutbreak);
                 storm.intensity = Math.min(1.0, intensity); // Apply calculated intensity
@@ -2484,10 +2487,9 @@ function triggerOutbreak(autoSpawn = false) { // Added autoSpawn flag
 
                  stormSize = minSupercellSize + Math.random() * (maxSupercellSize - minSupercellSize); 
                 
-                 // Ensure storm spawns fully within the canvas bounds
                  const buffer = stormSize + 10;
-                 const x = buffer + Math.random() * (canvas.width - 2 * buffer);
-                 const y = buffer + Math.random() * (canvas.height - 2 * buffer);
+                 const x = buffer + Math.random() * (canvas.width * 2 - 2 * buffer);
+                 const y = buffer + Math.random() * (canvas.height * 2 - 2 * buffer);
 
                  const storm = new StormCell(x, y, isSupercellOutbreak);
                  storm.intensity = Math.min(1.0, intensity); // Apply calculated intensity
@@ -2678,9 +2680,9 @@ function resetSimulation() {
     simulationState._lastClockTime = 0;
     simulationState._clockAccumulator = 0;
 
-    // Reset camera
-    simulationState.camera.x = 0;
-    simulationState.camera.y = 0;
+    // Reset camera (center on Metro County)
+    simulationState.camera.x = canvas.width * 0.5;
+    simulationState.camera.y = canvas.height * 0.5;
     simulationState.camera.zoom = 1;
     clampCamera();
     simulationState._dragStartX = null;
@@ -2961,47 +2963,371 @@ document.addEventListener('keydown', (event) => {
     }
 });
 
-// --- Fake City Map Data: Metro County ---
-const METRO_COUNTY = {
-    neighborhoods: [
-        { name: 'Oakwood Heights', cx: 0.15, cy: 0.15, radius: 0.10 },
-        { name: 'Northwood', cx: 0.50, cy: 0.10, radius: 0.09 },
-        { name: 'Prairie View', cx: 0.78, cy: 0.15, radius: 0.10 },
-        { name: 'Meadowbrook', cx: 0.10, cy: 0.45, radius: 0.09 },
-        { name: 'Downtown Metro', cx: 0.50, cy: 0.45, radius: 0.08 },
-        { name: 'Industrial Park', cx: 0.85, cy: 0.45, radius: 0.08 },
-        { name: 'Riverside', cx: 0.25, cy: 0.70, radius: 0.09 },
-        { name: 'Lakewood Estates', cx: 0.72, cy: 0.72, radius: 0.10 },
-        { name: 'Southgate', cx: 0.50, cy: 0.82, radius: 0.08 },
-        { name: 'Cedar Creek', cx: 0.82, cy: 0.82, radius: 0.08 },
-    ],
-    river: [
-        { x: 0.48, y: 0.00 }, { x: 0.45, y: 0.12 },
-        { x: 0.52, y: 0.25 }, { x: 0.47, y: 0.38 },
-        { x: 0.50, y: 0.50 }, { x: 0.48, y: 0.65 },
-        { x: 0.53, y: 0.80 }, { x: 0.50, y: 1.00 },
-    ],
-    roads: [
-        { type: 'highway', label: 'I-44', points: [{ x: 0, y: 0.40 }, { x: 0.25, y: 0.38 }, { x: 0.50, y: 0.40 }, { x: 0.75, y: 0.39 }, { x: 1, y: 0.41 }] },
-        { type: 'highway', label: 'SH-9', points: [{ x: 0.35, y: 0 }, { x: 0.36, y: 0.50 }, { x: 0.35, y: 1 }] },
-        { type: 'road', points: [{ x: 0, y: 0.25 }, { x: 1, y: 0.25 }] },
-        { type: 'road', points: [{ x: 0, y: 0.55 }, { x: 1, y: 0.55 }] },
-        { type: 'road', points: [{ x: 0, y: 0.70 }, { x: 1, y: 0.70 }] },
-        { type: 'road', points: [{ x: 0.20, y: 0 }, { x: 0.20, y: 1 }] },
-        { type: 'road', points: [{ x: 0.65, y: 0 }, { x: 0.65, y: 1 }] },
-        { type: 'street', points: [{ x: 0.40, y: 0.35 }, { x: 0.60, y: 0.35 }] },
-        { type: 'street', points: [{ x: 0.40, y: 0.50 }, { x: 0.60, y: 0.50 }] },
-        { type: 'street', points: [{ x: 0.40, y: 0.35 }, { x: 0.40, y: 0.50 }] },
-        { type: 'street', points: [{ x: 0.60, y: 0.35 }, { x: 0.60, y: 0.50 }] },
-    ],
-    landmarks: [
-        { name: 'Memorial Hospital', x: 0.42, y: 0.38, icon: 'H' },
-        { name: 'State University', x: 0.20, y: 0.55, icon: 'U' },
-        { name: 'Riverbend Mall', x: 0.62, y: 0.55, icon: 'M' },
-        { name: 'Metro County Airport', x: 0.55, y: 0.88, icon: 'A' },
-    ],
-    lake: { x: 0.85, y: 0.85, rx: 0.08, ry: 0.05 },
-};
+// --- Expanded County Map Data ---
+// 9-county grid centered on Metro County.
+// Each county has local 0-1 coordinates within its cell.
+// cellX/cellY define the cell's top-left corner in canvas-fraction units.
+// cellW/cellH define the cell's size in canvas-fraction units.
+// World coordinate: worldX = (cellX + localX * cellW) * canvas.width
+
+const COUNTIES = [
+    // === Corner counties (0.5w × 0.5h each) ===
+    {
+        name: 'Cedar County',
+        cellX: 0, cellY: 0, cellW: 0.5, cellH: 0.5,
+        color: '#6b9b37', cropColor: '#5c8a2e',
+        towns: [
+            { name: 'Cedarville', cx: 0.5, cy: 0.5 },
+            { name: 'Pine Grove', cx: 0.3, cy: 0.2 },
+        ],
+        roads: [
+            { type: 'road', points: [{ x: 1, y: 0.5 }, { x: 0.5, y: 0.5 }] },
+            { type: 'road', points: [{ x: 0.5, y: 1 }, { x: 0.5, y: 0.5 }] },
+        ],
+        landmarks: [
+            { name: 'Cedar Lake Camp', x: 0.7, y: 0.7, icon: '⛺' },
+        ],
+        lake: { x: 0.75, y: 0.75, rx: 0.15, ry: 0.12 },
+    },
+    {
+        name: 'Pine County',
+        cellX: 1.5, cellY: 0, cellW: 0.5, cellH: 0.5,
+        color: '#5a8a3c', cropColor: '#4e7a30',
+        towns: [
+            { name: 'Pine Ridge', cx: 0.5, cy: 0.4 },
+            { name: 'Eastwood', cx: 0.3, cy: 0.7 },
+        ],
+        roads: [
+            { type: 'road', points: [{ x: 0, y: 0.5 }, { x: 0.5, y: 0.5 }] },
+            { type: 'road', points: [{ x: 0.5, y: 1 }, { x: 0.5, y: 0.3 }] },
+        ],
+        landmarks: [
+            { name: 'Pine Ridge Park', x: 0.5, y: 0.15, icon: '🌲' },
+        ],
+    },
+    {
+        name: 'Valley County',
+        cellX: 0, cellY: 1.5, cellW: 0.5, cellH: 0.5,
+        color: '#7cb342', cropColor: '#689f38',
+        towns: [
+            { name: 'Valley Center', cx: 0.5, cy: 0.5 },
+            { name: 'Riverton', cx: 0.3, cy: 0.3 },
+        ],
+        roads: [
+            { type: 'road', points: [{ x: 1, y: 0.5 }, { x: 0.5, y: 0.5 }] },
+            { type: 'road', points: [{ x: 0.5, y: 0 }, { x: 0.5, y: 0.5 }] },
+        ],
+        landmarks: [
+            { name: 'Valley View Dam', x: 0.6, y: 0.25, icon: '⚡' },
+        ],
+        river: [
+            { x: 0.3, y: 0 }, { x: 0.35, y: 0.3 }, { x: 0.5, y: 0.5 }, { x: 0.6, y: 0.7 }, { x: 0.7, y: 1 },
+        ],
+    },
+    {
+        name: 'Lake County',
+        cellX: 1.5, cellY: 1.5, cellW: 0.5, cellH: 0.5,
+        color: '#7cb342', cropColor: '#689f38',
+        towns: [
+            { name: 'Lakeland', cx: 0.5, cy: 0.3 },
+            { name: 'Sunset Bay', cx: 0.6, cy: 0.7 },
+        ],
+        roads: [
+            { type: 'road', points: [{ x: 0, y: 0.5 }, { x: 0.5, y: 0.5 }] },
+            { type: 'road', points: [{ x: 0.5, y: 0 }, { x: 0.5, y: 0.3 }] },
+        ],
+        landmarks: [
+            { name: 'Lake Marina', x: 0.7, y: 0.8, icon: '⛵' },
+        ],
+        lake: { x: 0.65, y: 0.65, rx: 0.18, ry: 0.14 },
+    },
+    // === Cardinal counties (w × 0.5h or 0.5w × h) ===
+    {
+        name: 'Greenwood County',
+        cellX: 0.5, cellY: 0, cellW: 1, cellH: 0.5,
+        color: '#7cb342', cropColor: '#689f38',
+        towns: [
+            { name: 'Greenwood', cx: 0.3, cy: 0.5 },
+            { name: 'Pine Hills', cx: 0.7, cy: 0.4 },
+            { name: 'Fairlawn', cx: 0.5, cy: 0.2 },
+        ],
+        roads: [
+            { type: 'highway', label: 'SH-9', points: [{ x: 0.35, y: 1 }, { x: 0.36, y: 0.5 }, { x: 0.35, y: 0 }] },
+            { type: 'road', points: [{ x: 0, y: 0.5 }, { x: 1, y: 0.5 }] },
+            { type: 'road', points: [{ x: 0.7, y: 0.3 }, { x: 0.7, y: 0.6 }] },
+        ],
+        landmarks: [
+            { name: 'Greenwood High', x: 0.25, y: 0.35, icon: '🏫' },
+        ],
+    },
+    {
+        name: 'Southern Plains',
+        cellX: 0.5, cellY: 1.5, cellW: 1, cellH: 0.5,
+        color: '#8bc34a', cropColor: '#7cb342',
+        towns: [
+            { name: 'Plainsview', cx: 0.3, cy: 0.5 },
+            { name: 'Fairfield', cx: 0.7, cy: 0.4 },
+            { name: 'Meadow Creek', cx: 0.5, cy: 0.7 },
+        ],
+        roads: [
+            { type: 'highway', label: 'US-54', points: [{ x: 0.35, y: 0 }, { x: 0.36, y: 0.5 }, { x: 0.35, y: 1 }] },
+            { type: 'road', points: [{ x: 0, y: 0.4 }, { x: 1, y: 0.4 }] },
+        ],
+        landmarks: [
+            { name: 'Grain Elevator', x: 0.5, y: 0.25, icon: '🌾' },
+        ],
+    },
+    {
+        name: 'Westbrook County',
+        cellX: 0, cellY: 0.5, cellW: 0.5, cellH: 1,
+        color: '#7cb342', cropColor: '#689f38',
+        towns: [
+            { name: 'Westbrook', cx: 0.5, cy: 0.4 },
+            { name: 'Elmwood', cx: 0.4, cy: 0.7 },
+        ],
+        roads: [
+            { type: 'highway', label: 'US-54', points: [{ x: 1, y: 0.4 }, { x: 0.5, y: 0.4 }, { x: 0, y: 0.4 }] },
+            { type: 'road', points: [{ x: 0.5, y: 0 }, { x: 0.5, y: 1 }] },
+        ],
+        landmarks: [
+            { name: 'Westbrook Med', x: 0.5, y: 0.6, icon: '🏥' },
+        ],
+    },
+    {
+        name: 'Easton County',
+        cellX: 1.5, cellY: 0.5, cellW: 0.5, cellH: 1,
+        color: '#8bc34a', cropColor: '#7cb342',
+        towns: [
+            { name: 'Easton', cx: 0.5, cy: 0.3 },
+            { name: 'Millbrook', cx: 0.4, cy: 0.7 },
+        ],
+        roads: [
+            { type: 'highway', label: 'I-44', points: [{ x: 0, y: 0.4 }, { x: 0.5, y: 0.4 }, { x: 1, y: 0.4 }] },
+            { type: 'road', points: [{ x: 0.5, y: 0 }, { x: 0.5, y: 1 }] },
+        ],
+        landmarks: [
+            { name: 'Easton Indy Park', x: 0.3, y: 0.55, icon: '🏭' },
+        ],
+    },
+    // === Metro County (center, 1w × 1h) ===
+    {
+        name: 'Metro County',
+        cellX: 0.5, cellY: 0.5, cellW: 1, cellH: 1,
+        color: '#8bc34a', cropColor: '#7cb342',
+        towns: [
+            { name: 'Downtown Metro', cx: 0.50, cy: 0.45 },
+            { name: 'Oakwood Heights', cx: 0.15, cy: 0.15 },
+            { name: 'Northwood', cx: 0.50, cy: 0.10 },
+            { name: 'Prairie View', cx: 0.78, cy: 0.15 },
+            { name: 'Meadowbrook', cx: 0.10, cy: 0.45 },
+            { name: 'Industrial Park', cx: 0.85, cy: 0.45 },
+            { name: 'Riverside', cx: 0.25, cy: 0.70 },
+            { name: 'Lakewood Estates', cx: 0.72, cy: 0.72 },
+            { name: 'Southgate', cx: 0.50, cy: 0.82 },
+            { name: 'Cedar Creek', cx: 0.82, cy: 0.82 },
+        ],
+        roads: [
+            { type: 'highway', label: 'I-44', points: [{ x: 0, y: 0.40 }, { x: 0.25, y: 0.38 }, { x: 0.50, y: 0.40 }, { x: 0.75, y: 0.39 }, { x: 1, y: 0.41 }] },
+            { type: 'highway', label: 'SH-9', points: [{ x: 0.35, y: 0 }, { x: 0.36, y: 0.50 }, { x: 0.35, y: 1 }] },
+            { type: 'road', points: [{ x: 0, y: 0.25 }, { x: 1, y: 0.25 }] },
+            { type: 'road', points: [{ x: 0, y: 0.55 }, { x: 1, y: 0.55 }] },
+            { type: 'road', points: [{ x: 0, y: 0.70 }, { x: 1, y: 0.70 }] },
+            { type: 'road', points: [{ x: 0.20, y: 0 }, { x: 0.20, y: 1 }] },
+            { type: 'road', points: [{ x: 0.65, y: 0 }, { x: 0.65, y: 1 }] },
+            { type: 'street', points: [{ x: 0.40, y: 0.35 }, { x: 0.60, y: 0.35 }] },
+            { type: 'street', points: [{ x: 0.40, y: 0.50 }, { x: 0.60, y: 0.50 }] },
+            { type: 'street', points: [{ x: 0.40, y: 0.35 }, { x: 0.40, y: 0.50 }] },
+            { type: 'street', points: [{ x: 0.60, y: 0.35 }, { x: 0.60, y: 0.50 }] },
+        ],
+        landmarks: [
+            { name: 'Memorial Hospital', x: 0.42, y: 0.38, icon: 'H' },
+            { name: 'State University', x: 0.20, y: 0.55, icon: 'U' },
+            { name: 'Riverbend Mall', x: 0.62, y: 0.55, icon: 'M' },
+            { name: 'Metro Airport', x: 0.55, y: 0.88, icon: 'A' },
+        ],
+        river: [
+            { x: 0.48, y: 0.00 }, { x: 0.45, y: 0.12 },
+            { x: 0.52, y: 0.25 }, { x: 0.47, y: 0.38 },
+            { x: 0.50, y: 0.50 }, { x: 0.48, y: 0.65 },
+            { x: 0.53, y: 0.80 }, { x: 0.50, y: 1.00 },
+        ],
+        lake: { x: 0.85, y: 0.85, rx: 0.08, ry: 0.05 },
+    },
+];
+
+function getCountyCellWorldCoords(county, lx, ly) {
+    const w = canvas.width;
+    const h = canvas.height;
+    return {
+        x: (county.cellX + lx * county.cellW) * w,
+        y: (county.cellY + ly * county.cellH) * h
+    };
+}
+
+function drawCountyRiver(county) {
+    if (!county.river) return;
+    const w = canvas.width;
+    const h = canvas.height;
+    ctx.beginPath();
+    const pts = county.river;
+    for (let i = 0; i < pts.length; i++) {
+        const p = getCountyCellWorldCoords(county, pts[i].x, pts[i].y);
+        if (i === 0) ctx.moveTo(p.x, p.y);
+        else ctx.lineTo(p.x, p.y);
+    }
+    ctx.strokeStyle = '#1e88e5';
+    ctx.lineWidth = 12;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.stroke();
+}
+
+function drawCountyLake(county) {
+    if (!county.lake) return;
+    const w = canvas.width;
+    const h = canvas.height;
+    const c = county.lake;
+    const p = getCountyCellWorldCoords(county, c.x, c.y);
+    ctx.beginPath();
+    ctx.ellipse(p.x, p.y, c.rx * county.cellW * w, c.ry * county.cellH * h, 0, 0, Math.PI * 2);
+    ctx.fillStyle = '#1e88e5';
+    ctx.fill();
+}
+
+function drawCountyRoads(county) {
+    const w = canvas.width;
+    const h = canvas.height;
+    county.roads.forEach(road => {
+        const pts = road.points;
+        const worldPts = pts.map(p => getCountyCellWorldCoords(county, p.x, p.y));
+        if (road.type === 'highway') {
+            ctx.beginPath();
+            ctx.moveTo(worldPts[0].x, worldPts[0].y);
+            for (let i = 1; i < worldPts.length; i++) ctx.lineTo(worldPts[i].x, worldPts[i].y);
+            ctx.strokeStyle = '#555';
+            ctx.lineWidth = 10;
+            ctx.lineCap = 'round';
+            ctx.lineJoin = 'round';
+            ctx.stroke();
+
+            ctx.beginPath();
+            ctx.moveTo(worldPts[0].x, worldPts[0].y);
+            for (let i = 1; i < worldPts.length; i++) ctx.lineTo(worldPts[i].x, worldPts[i].y);
+            ctx.strokeStyle = '#c8a84e';
+            ctx.lineWidth = 2;
+            ctx.setLineDash([8, 10]);
+            ctx.stroke();
+            ctx.setLineDash([]);
+
+            if (road.label) {
+                const mid = Math.floor(worldPts.length / 2);
+                ctx.fillStyle = '#fff';
+                ctx.font = 'bold 11px Arial';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'bottom';
+                ctx.fillText(road.label, worldPts[mid].x, worldPts[mid].y - 12);
+            }
+        } else {
+            ctx.beginPath();
+            ctx.moveTo(worldPts[0].x, worldPts[0].y);
+            for (let i = 1; i < worldPts.length; i++) ctx.lineTo(worldPts[i].x, worldPts[i].y);
+            ctx.strokeStyle = road.type === 'road' ? '#999' : '#aaa';
+            ctx.lineWidth = road.type === 'road' ? 3 : 1.5;
+            ctx.stroke();
+        }
+    });
+}
+
+function drawCountyTowns(county) {
+    const w = canvas.width;
+    const h = canvas.height;
+    county.towns.forEach(town => {
+        const p = getCountyCellWorldCoords(county, town.cx, town.cy);
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.18)';
+        ctx.font = '10px Arial';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(town.name, p.x, p.y);
+    });
+}
+
+function drawCountyLandmarks(county) {
+    const w = canvas.width;
+    const h = canvas.height;
+    county.landmarks.forEach(lm => {
+        const p = getCountyCellWorldCoords(county, lm.x, lm.y);
+        ctx.fillStyle = '#c62828';
+        ctx.fillRect(p.x - 9, p.y - 9, 18, 18);
+        ctx.fillStyle = 'white';
+        ctx.font = 'bold 11px Arial';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(lm.icon, p.x, p.y);
+        ctx.fillStyle = '#222';
+        ctx.font = '8px Arial';
+        ctx.textBaseline = 'top';
+        ctx.fillText(lm.name, p.x, p.y + 11);
+    });
+}
+
+function drawCountyBoundary(county) {
+    const w = canvas.width;
+    const h = canvas.height;
+    const x0 = county.cellX * w;
+    const y0 = county.cellY * h;
+    const cw = county.cellW * w;
+    const ch = county.cellH * h;
+    ctx.strokeStyle = 'rgba(60, 40, 15, 0.35)';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([8, 5]);
+    ctx.strokeRect(x0 + 4, y0 + 4, cw - 8, ch - 8);
+    ctx.setLineDash([]);
+    ctx.fillStyle = 'rgba(60, 40, 15, 0.5)';
+    ctx.font = 'bold 9px Arial';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    ctx.fillText(county.name.toUpperCase(), x0 + 8, y0 + 7);
+}
+
+function drawCounties() {
+    const w = canvas.width;
+    const h = canvas.height;
+
+    // Layer 1: Terrain background for each county
+    COUNTIES.forEach(county => {
+        const x0 = county.cellX * w;
+        const y0 = county.cellY * h;
+        const cw = county.cellW * w;
+        const ch = county.cellH * h;
+        ctx.fillStyle = county.color;
+        ctx.fillRect(x0, y0, cw, ch);
+
+        // Crop field patterns
+        ctx.fillStyle = county.cropColor;
+        const numFields = Math.floor((county.cellW + county.cellH) * 15);
+        for (let i = 0; i < numFields; i++) {
+            const fx = x0 + (Math.sin(i * 37.7 + county.cellX * 100) * 0.5 + 0.5) * cw;
+            const fy = y0 + (Math.cos(i * 53.1 + county.cellY * 100) * 0.5 + 0.5) * ch;
+            ctx.fillRect(fx - 25, fy - 25, 50, 50);
+        }
+
+        // Water features
+        drawCountyRiver(county);
+        drawCountyLake(county);
+    });
+
+    // Layer 2: Roads (over water)
+    COUNTIES.forEach(county => drawCountyRoads(county));
+
+    // Layer 3: Town labels
+    COUNTIES.forEach(county => drawCountyTowns(county));
+
+    // Layer 4: Landmarks
+    COUNTIES.forEach(county => drawCountyLandmarks(county));
+
+    // Layer 5: County boundaries
+    COUNTIES.forEach(county => drawCountyBoundary(county));
+}
 
 function drawCityMap() {
     const w = canvas.width;
@@ -3009,166 +3335,41 @@ function drawCityMap() {
     const mapW = w * 2;
     const mapH = h * 2;
 
-    // Extended background — farmland covering all possible visible areas at any zoom
-    ctx.fillStyle = '#d4c9a8';
+    // Extended background covering all possible visible areas at any zoom
+    ctx.fillStyle = '#6b8e23'; // base farmland green for areas beyond county fills
     ctx.fillRect(-w * 2, -h * 2, mapW + 4 * w, mapH + 4 * h);
 
-    // Extended field patterns
-    ctx.fillStyle = '#cdc29e';
+    // Distant field flecks
+    ctx.fillStyle = '#7ba428';
     for (let i = 0; i < 60; i++) {
         const fx = (Math.sin(i * 37.7) * 0.5 + 0.5) * mapW;
         const fy = (Math.cos(i * 53.1) * 0.5 + 0.5) * mapH;
-        ctx.fillRect(fx - 30, fy - 30, 60, 60);
+        ctx.fillRect(fx - 20, fy - 20, 40, 40);
     }
 
-    // Adjacent county grid marks (beyond the main city area)
-    ctx.strokeStyle = 'rgba(139, 69, 19, 0.2)';
-    ctx.lineWidth = 1.5;
-    ctx.setLineDash([8, 8]);
-    for (let gx = 0; gx <= mapW; gx += w) {
-        ctx.beginPath();
-        ctx.moveTo(gx, 0);
-        ctx.lineTo(gx, mapH);
-        ctx.stroke();
-    }
-    for (let gy = 0; gy <= mapH; gy += h) {
-        ctx.beginPath();
-        ctx.moveTo(0, gy);
-        ctx.lineTo(mapW, gy);
-        ctx.stroke();
-    }
-    ctx.setLineDash([]);
-
-    // Label adjacent counties
-    ctx.fillStyle = 'rgba(139, 69, 19, 0.3)';
-    ctx.font = 'bold 9px Arial';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    const adjacentCounties = [
-        { name: 'NORTH METRO', cx: w, cy: h * 0.5 },
-        { name: 'EAST METRO', cx: w * 1.5, cy: h },
-        { name: 'SOUTH METRO', cx: w, cy: h * 1.5 },
-        { name: 'WEST METRO', cx: w * 0.5, cy: h },
-        { name: 'NW COUNTY', cx: w * 0.5, cy: h * 0.5 },
-        { name: 'NE COUNTY', cx: w * 1.5, cy: h * 0.5 },
-        { name: 'SE COUNTY', cx: w * 1.5, cy: h * 1.5 },
-        { name: 'SW COUNTY', cx: w * 0.5, cy: h * 1.5 },
-    ];
-    adjacentCounties.forEach(c => {
-        ctx.fillText(c.name, c.cx, c.cy);
-    });
-
-    // River
-    ctx.beginPath();
-    const rv = METRO_COUNTY.river;
-    ctx.moveTo(rv[0].x * w, rv[0].y * h);
-    for (let i = 1; i < rv.length; i++) {
-        ctx.lineTo(rv[i].x * w, rv[i].y * h);
-    }
-    ctx.strokeStyle = '#3a7bd5';
-    ctx.lineWidth = 14;
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-    ctx.stroke();
-
-    // Lake
-    const lk = METRO_COUNTY.lake;
-    ctx.beginPath();
-    ctx.ellipse(lk.x * w, lk.y * h, lk.rx * w, lk.ry * h, 0, 0, Math.PI * 2);
-    ctx.fillStyle = '#3a7bd5';
-    ctx.fill();
-
-    // Roads
-    METRO_COUNTY.roads.forEach(road => {
-        const pts = road.points;
-        if (road.type === 'highway') {
-            ctx.beginPath();
-            ctx.moveTo(pts[0].x * w, pts[0].y * h);
-            for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x * w, pts[i].y * h);
-            ctx.strokeStyle = '#666';
-            ctx.lineWidth = 10;
-            ctx.lineCap = 'round';
-            ctx.lineJoin = 'round';
-            ctx.stroke();
-
-            ctx.beginPath();
-            ctx.moveTo(pts[0].x * w, pts[0].y * h);
-            for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x * w, pts[i].y * h);
-            ctx.strokeStyle = '#c8a84e';
-            ctx.lineWidth = 2;
-            ctx.setLineDash([8, 10]);
-            ctx.stroke();
-            ctx.setLineDash([]);
-
-            const mid = Math.floor(pts.length / 2);
-            ctx.fillStyle = '#fff';
-            ctx.font = 'bold 11px Arial';
-            ctx.textAlign = 'center';
-            ctx.textBaseline = 'bottom';
-            ctx.fillText(road.label, pts[mid].x * w, pts[mid].y * h - 12);
-        } else {
-            ctx.beginPath();
-            ctx.moveTo(pts[0].x * w, pts[0].y * h);
-            for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x * w, pts[i].y * h);
-            ctx.strokeStyle = road.type === 'road' ? '#bbb' : '#ccc';
-            ctx.lineWidth = road.type === 'road' ? 3 : 1.5;
-            ctx.stroke();
-        }
-    });
-
-    // Neighborhood labels
-    METRO_COUNTY.neighborhoods.forEach(n => {
-        ctx.fillStyle = 'rgba(0, 0, 0, 0.15)';
-        ctx.font = '11px Arial';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(n.name, n.cx * w, n.cy * h);
-    });
-
-    // Landmarks
-    METRO_COUNTY.landmarks.forEach(lm => {
-        const x = lm.x * w;
-        const y = lm.y * h;
-        ctx.fillStyle = '#8B0000';
-        ctx.fillRect(x - 9, y - 9, 18, 18);
-        ctx.fillStyle = 'white';
-        ctx.font = 'bold 11px Arial';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(lm.icon, x, y);
-        ctx.fillStyle = '#222';
-        ctx.font = '8px Arial';
-        ctx.textBaseline = 'top';
-        ctx.fillText(lm.name, x, y + 11);
-    });
-
-    // County boundary
-    ctx.strokeStyle = 'rgba(139, 69, 19, 0.4)';
-    ctx.lineWidth = 3;
-    ctx.setLineDash([10, 6]);
-    ctx.strokeRect(5, 5, w - 10, h - 10);
-    ctx.setLineDash([]);
-    ctx.fillStyle = 'rgba(139, 69, 19, 0.6)';
-    ctx.font = 'bold 10px Arial';
-    ctx.textAlign = 'left';
-    ctx.textBaseline = 'top';
-    ctx.fillText('METRO COUNTY', 10, 8);
+    // Draw all 9 counties
+    drawCounties();
 }
 
 /**
- * Finds the nearest neighborhood name for a given canvas position.
+ * Finds the nearest town or county name for a given world position.
  */
 function getNeighborhood(x, y) {
     let closest = 'Metro County';
     let minDist = Infinity;
-    METRO_COUNTY.neighborhoods.forEach(n => {
-        const dx = (x / canvas.width) - n.cx;
-        const dy = (y / canvas.height) - n.cy;
-        const dist = Math.sqrt(dx * dx + dy * dy);
-        if (dist < minDist) {
-            minDist = dist;
-            closest = n.name;
-        }
+    const w = canvas.width;
+    const h = canvas.height;
+    COUNTIES.forEach(county => {
+        county.towns.forEach(town => {
+            const p = getCountyCellWorldCoords(county, town.cx, town.cy);
+            const dx = x - p.x;
+            const dy = y - p.y;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            if (dist < minDist) {
+                minDist = dist;
+                closest = town.name;
+            }
+        });
     });
     return closest;
 }
@@ -3199,9 +3400,28 @@ class EASAlertSystem {
 
     async queueAlert(type, tornado) {
         const text = this.composeText(type, tornado);
-        this.queue.push({ type, text, tornadoId: tornado.id });
+        // Start TTS fetch immediately (parallel with tone playback)
+        const ttsPromise = this.fetchTTS(text);
+        this.queue.push({ type, text, tornadoId: tornado.id, ttsPromise });
         if (!this.playing) {
             await this.processQueue();
+        }
+    }
+
+    async fetchTTS(text) {
+        try {
+            const res = await fetch('/.netlify/functions/eas-tts', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text })
+            });
+            if (!res.ok) return null;
+            const blob = await res.blob();
+            const ab = await blob.arrayBuffer();
+            return await this.audioCtx.decodeAudioData(ab);
+        } catch (e) {
+            console.warn('TTS fetch error:', e);
+            return null;
         }
     }
 
@@ -3243,27 +3463,22 @@ class EASAlertSystem {
                 await this.audioCtx.resume();
             }
 
-            // 1. Play header tones (0 to 14.5s)
-            await this.playSegment(this.audioCtx, this.warningBuffer, 0, 14.5);
+            // 1. Play header tones (0 to 14.5s) — run IN PARALLEL with TTS fetch
+            const tonesPromise = this.playSegment(this.audioCtx, this.warningBuffer, 0, 14.5);
 
-            // 2. Play EAS TOM voice (TTS with 2.5x volume gain)
-            const res = await fetch('/.netlify/functions/eas-tts', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ text: alert.text })
-            });
+            // 2. Wait for header tones to finish
+            await tonesPromise;
 
-            if (res.ok) {
-                const blob = await res.blob();
-                const ttsBuffer = await blob.arrayBuffer();
-                const ttsAudioBuffer = await this.audioCtx.decodeAudioData(ttsBuffer);
+            // 3. Play EAS TOM voice (TTS already fetched by queueAlert)
+            const ttsAudioBuffer = await alert.ttsPromise;
+            if (ttsAudioBuffer) {
                 await this.playSegment(this.audioCtx, ttsAudioBuffer, 0, ttsAudioBuffer.duration, 2.5);
             }
 
-            // 3. Wait 1 second silence
+            // 4. Wait 1 second silence
             await new Promise(r => setTimeout(r, 1000));
 
-            // 4. Play ender tones (14.5s to end)
+            // 5. Play ender tones (14.5s to end)
             await this.playSegment(this.audioCtx, this.warningBuffer, 14.5, this.warningBuffer.duration);
 
         } catch (e) {
@@ -3342,19 +3557,20 @@ class EASAlertSystem {
     composeText(type, tornado) {
         const neighborhood = getNeighborhood(tornado.x, tornado.y);
         const dir = getCompassDirection(tornado.direction);
+        const dirFull = COMPASS_FULL[dir] || dir;
         const speed = Math.max(10, (tornado.speed * 60 * 5)).toFixed(0);
         const time = formatSimClock(simulationState.simClock);
         const until = formatSimClock(simulationState.simClock + 30);
 
         switch (type) {
             case 'warning':
-                return `The National Weather Service in Metro County has issued a Tornado Warning for ${neighborhood} in Metro County until ${until}. At ${time}, a confirmed tornado was located near ${neighborhood}, moving ${dir} at ${speed} mph. HAZARD... Damaging tornado. SOURCE... Radar confirmed rotation. IMPACT... Flying debris will be dangerous to those caught without shelter. Mobile homes will be damaged or destroyed. Damage to roofs, windows, and vehicles will occur. Tree damage is likely. PRECAUTIONARY PREPAREDNESS ACTIONS... TAKE COVER NOW! Move to an interior room on the lowest floor of a sturdy building. Avoid windows. If in a mobile home or vehicle, move to the closest substantial shelter and protect yourself from flying debris.`;
+                return `The National Weather Service in Metro County has issued a Tornado Warning for ${neighborhood} in Metro County until ${until}. At ${time}, a confirmed tornado was located near ${neighborhood}, moving ${dirFull} at ${speed} mph. HAZARD... Damaging tornado. SOURCE... Radar confirmed rotation. IMPACT... Flying debris will be dangerous to those caught without shelter. Mobile homes will be damaged or destroyed. Damage to roofs, windows, and vehicles will occur. Tree damage is likely. PRECAUTIONARY PREPAREDNESS ACTIONS... TAKE COVER NOW! Move to an interior room on the lowest floor of a sturdy building. Avoid windows. If in a mobile home or vehicle, move to the closest substantial shelter and protect yourself from flying debris.`;
 
             case 'emergency':
-                return `TORNADO EMERGENCY FOR ${neighborhood}. The National Weather Service in Metro County has issued a Tornado Warning for ${neighborhood} in Metro County until ${until}. At ${time}, a large and extremely dangerous tornado was located near ${neighborhood}, moving ${dir} at ${speed} mph. This is a TORNADO EMERGENCY for ${neighborhood}. This is a PARTICULARLY DANGEROUS SITUATION. TAKE COVER NOW! Move to an interior room on the lowest floor of a well built building. If in a mobile home or vehicle, move to the closest structure and protect yourself from flying debris.`;
+                return `TORNADO EMERGENCY FOR ${neighborhood}. The National Weather Service in Metro County has issued a Tornado Warning for ${neighborhood} in Metro County until ${until}. At ${time}, a large and extremely dangerous tornado was located near ${neighborhood}, moving ${dirFull} at ${speed} mph. This is a TORNADO EMERGENCY for ${neighborhood}. This is a PARTICULARLY DANGEROUS SITUATION. TAKE COVER NOW! Move to an interior room on the lowest floor of a well built building. If in a mobile home or vehicle, move to the closest structure and protect yourself from flying debris.`;
 
             case 'update':
-                return `...A TORNADO WARNING REMAINS IN EFFECT UNTIL ${until} FOR ${neighborhood}. At ${time}, a confirmed tornado was located near ${neighborhood}, moving ${dir} at ${speed} mph. HAZARD... Damaging tornado. SOURCE... Radar confirmed rotation. IMPACT... Flying debris will be dangerous. TAKE COVER NOW!`;
+                return `...A TORNADO WARNING REMAINS IN EFFECT UNTIL ${until} FOR ${neighborhood}. At ${time}, a confirmed tornado was located near ${neighborhood}, moving ${dirFull} at ${speed} mph. HAZARD... Damaging tornado. SOURCE... Radar confirmed rotation. IMPACT... Flying debris will be dangerous. TAKE COVER NOW!`;
 
             case 'expired':
                 return `The Tornado Warning for ${neighborhood} has expired. The storm which prompted the warning has weakened and is no longer capable of producing a tornado. Therefore the warning has been allowed to expire. A Tornado Watch remains in effect until ${until} for Metro County.`;
@@ -3602,8 +3818,8 @@ function animate() {
     
     if (simulationState.lightningFlash > 0) {
         drawLightning(
-            Math.random() * canvas.width,
-            Math.random() * canvas.height,
+            Math.random() * canvas.width * 2,
+            Math.random() * canvas.height * 2,
             simulationState.lightningFlash
         );
     }
@@ -3729,14 +3945,18 @@ window.onload = function () {
     // R key to reset camera
     document.addEventListener('keydown', (e) => {
         if (e.key === 'r' || e.key === 'R') {
-            simulationState.camera.x = 0;
-            simulationState.camera.y = 0;
+            simulationState.camera.x = canvas.width * 0.5;
+            simulationState.camera.y = canvas.height * 0.5;
             simulationState.camera.zoom = 1;
             clampCamera();
         }
     });
 
     resizeCanvas(); // Set initial canvas size and base locations
+    
+    // Center camera on Metro County
+    simulationState.camera.x = canvas.width * 0.5;
+    simulationState.camera.y = canvas.height * 0.5;
     
     // Set default checkbox states
     document.getElementById('showWindVectors').checked = true; // Set to checked by default
