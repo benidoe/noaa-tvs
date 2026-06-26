@@ -465,8 +465,9 @@
         </div>
     </div>
 
-    <!-- EAS Alert Banner -->
+    <!-- EAS Alert Overlay (header + body + close button) -->
     <div id="easOverlay" class="eas-overlay" style="display:none;">
+        <button id="easCloseBtn" class="eas-close-btn">&times;</button>
         <div class="eas-header">
             <span class="eas-header-icon">&#9654;</span>
             <span class="eas-header-text" id="easHeaderText">TORNADO WARNING</span>
@@ -478,10 +479,15 @@
                 <span class="eas-body-message" id="easBodyMessage"></span>
             </div>
         </div>
-        <div class="eas-footer" id="easFooter">
-            <div class="eas-footer-scroll" id="easFooterScroll"></div>
-        </div>
     </div>
+
+    <!-- Persistent EAS Footer Bar (stays after overlay dismissed) -->
+    <div id="easFooterBar" class="eas-footer" style="display:none;">
+        <div class="eas-footer-scroll" id="easFooterScroll"></div>
+    </div>
+
+    <!-- Simulation Clock Display -->
+    <div id="clockDisplay" class="clock-display">12:00 PM</div>
 
     <script src="script.js"></script>
 </body>

@@ -52,7 +52,17 @@ let simulationState = {
     activeTornadoDisplayIndex: 0, // Index of the tornado currently displayed in the info box
     screenShakeIntensity: 0, // New: intensity of screen shake (0-1)
     currentHailIntensity: 0, // New: intensity of hail (0-1)
-    lastStormActivityTime: 0 // Track last time a storm or tornado was active for auto-run
+    lastStormActivityTime: 0, // Track last time a storm or tornado was active for auto-run
+
+    // Simulation clock (1 sim minute per real second, starts at 12:00 PM = 720 minutes since midnight)
+    simClock: 720,
+    _clockFrameCounter: 0,
+
+    // Camera for pan/zoom
+    camera: { x: 0, y: 0, zoom: 1 },
+    _dragStartX: null,
+    _dragStartY: null,
+    _isDragging: false
 };
 
 // Tornado lifecycle phases: Defined states for a tornado's development
@@ -88,12 +98,14 @@ const EF_WIDTH_RANGES = [
 ];
 
 // Tornado phase durations in frames (60 frames per second)
-const FORMING_DURATION_FRAMES = 13 * 60;
-const ORGANIZING_DURATION_FRAMES = 19 * 60;
-const MATURE_DURATION_FRAMES = 28 * 60;
-const SHRINKING_DURATION_FRAMES = 8 * 60;
-const DECAYING_DURATION_FRAMES = 12 * 60;
-const DISSIPATING_DURATION_FRAMES = 3 * 60; // This is the forced dissipation time
+// Shortened so the full lifecycle takes ~25 sim minutes (25 real seconds at 1 min/sec)
+// Warning lasts 30 minutes — tornado is done before it expires.
+const FORMING_DURATION_FRAMES = 4 * 60;
+const ORGANIZING_DURATION_FRAMES = 6 * 60;
+const MATURE_DURATION_FRAMES = 8 * 60;
+const SHRINKING_DURATION_FRAMES = 2 * 60;
+const DECAYING_DURATION_FRAMES = 3 * 60;
+const DISSIPATING_DURATION_FRAMES = 2 * 60; // This is the forced dissipation time
 
 // Total lifespan for a tornado based on defined phases
 const TOTAL_TORNADO_LIFESPAN_FRAMES = FORMING_DURATION_FRAMES + ORGANIZING_DURATION_FRAMES + MATURE_DURATION_FRAMES + SHRINKING_DURATION_FRAMES + DECAYING_DURATION_FRAMES + DISSIPATING_DURATION_FRAMES;
@@ -179,25 +191,23 @@ let lastTornadoCount = 0;
 
 let easAlertSystem = null;
 
-// Function to handle tornado warning sounds
+// Function to handle tornado siren only (EAS TTS/tones handled by EASAlertSystem)
 function handleTornadoWarningSounds() {
     const activeTornadoes = simulationState.tornadoes.filter(t => t.isActive);
     const currentTornadoCount = activeTornadoes.length;
 
-    // Only play sounds if we transition from 0 to 1+ tornadoes
     if (currentTornadoCount > 0 && lastTornadoCount === 0) {
-        // Play tornado siren in background
-        SOUNDS.tornadoSiren.volume = 0.68; // Increased from 0.3 to 0.68
+        SOUNDS.tornadoSiren.volume = 0.68;
         SOUNDS.tornadoSiren.play();
         isTornadoSirenPlaying = true;
-
-        // Play NOAA warning at full volume
-        SOUNDS.noaaWarning.volume = 0.68;
-        SOUNDS.noaaWarning.play();
-        isNoaaWarningPlaying = true;
     }
 
-    // Update last tornado count
+    if (currentTornadoCount === 0 && lastTornadoCount > 0 && isTornadoSirenPlaying) {
+        SOUNDS.tornadoSiren.pause();
+        SOUNDS.tornadoSiren.currentTime = 0;
+        isTornadoSirenPlaying = false;
+    }
+
     lastTornadoCount = currentTornadoCount;
 }
 
@@ -220,7 +230,7 @@ const LIGHTNING_FLASH_DECAY = 0.05; // How fast lightning flash fades
 const LIGHTNING_MIN_INTERVAL_FRAMES = 3 * 60; // 3 seconds * 60 frames/sec
 const LIGHTNING_MAX_INTERVAL_FRAMES = 7 * 60; // 7 seconds * 60 frames/sec
 const DEBRIS_SIZES = [1, 3, 5]; // Small, medium, large debris particle sizes
-const AUTORUN_SPAWN_COOLDOWN_FRAMES = 10 * 60; // 10 seconds of no activity before spawning
+const AUTORUN_SPAWN_COOLDOWN_FRAMES = 5 * 60; // 5 seconds of no activity before spawning
 
 // CAPE range as requested by user (0-5000 J/kg)
 const MIN_CAPE = 0;
@@ -884,6 +894,11 @@ class StormCell {
      * Spawns a new Tornado object at the storm cell's location.
      */
     spawnTornado() {
+        // One tornado at a time
+        if (simulationState.tornadoes.some(t => t.isActive)) {
+            return;
+        }
+
         // Pass storm size as an influence factor for tornado initial width
         // The `size` of the supercell directly influences the initial width and intensity of the tornado.
         const sizeInfluence = this.size / PIXELS_PER_MILE_SCALE; // Normalize storm size relative to 1 "ratio mile"
@@ -1475,6 +1490,27 @@ function getCompassDirection(angleRad) {
     if (angleDeg >= 247.5 && angleDeg < 292.5) return "W";
     if (angleDeg >= 292.5 && angleDeg < 337.5) return "NW";
     return "N/A";
+}
+
+/**
+ * Formats simulation clock minutes since midnight to a time string.
+ */
+function formatSimClock(minutesSinceMidnight) {
+    const totalMinutes = ((minutesSinceMidnight % 1440) + 1440) % 1440;
+    const isPM = totalMinutes >= 720;
+    const hour12 = Math.floor((totalMinutes % 720) / 60) || 12;
+    const minute = totalMinutes % 60;
+    return `${hour12}:${String(minute).padStart(2, '0')} ${isPM ? 'PM' : 'AM'}`;
+}
+
+/**
+ * Converts screen coordinates to world coordinates accounting for camera pan/zoom.
+ */
+function screenToWorld(screenX, screenY) {
+    return {
+        x: screenX / simulationState.camera.zoom + simulationState.camera.x,
+        y: screenY / simulationState.camera.zoom + simulationState.camera.y
+    };
 }
 
 /**
@@ -2079,6 +2115,14 @@ function isTornadoAlreadyTargeted(tornadoId) {
  * @param {MouseEvent} event - The click event object.
  */
 function handleSimulationAreaClick(event) {
+    // Ignore clicks that were part of a drag
+    if (simulationState._isDragging) {
+        simulationState._isDragging = false;
+        simulationState._dragStartX = null;
+        simulationState._dragStartY = null;
+        return;
+    }
+
     // Check if the click originated from within the tornado info box.
     // If so, prevent it from affecting the simulation area.
     if (event.target.closest('.tornado-info')) {
@@ -2093,8 +2137,11 @@ function handleSimulationAreaClick(event) {
     }
 
     const rect = canvas.getBoundingClientRect();
-    let clickX = event.clientX - rect.left; // X coordinate relative to canvas
-    let clickY = event.clientY - rect.top; // Y coordinate relative to canvas
+    const screenX = event.clientX - rect.left;
+    const screenY = event.clientY - rect.top;
+    const world = screenToWorld(screenX, screenY);
+    let clickX = world.x;
+    let clickY = world.y;
 
     if (simulationState.awaitingTeamTarget) {
         // In target selection mode for intercept teams
@@ -2184,8 +2231,9 @@ function handleSimulationAreaRightClick(event) {
     }
 
     const rect = canvas.getBoundingClientRect();
-    const clickX = event.clientX - rect.left;
-    const clickY = event.clientY - rect.top;
+    const world = screenToWorld(event.clientX - rect.left, event.clientY - rect.top);
+    const clickX = world.x;
+    const clickY = world.y;
 
     let interactionHandled = false;
 
@@ -2269,11 +2317,10 @@ function handleSimulationAreaMouseMove(event) {
     // Only update cursor if not in auto-run mode and awaiting target.
     if (!simulationState.autoRun && simulationState.awaitingTeamTarget) {
         const rect = canvas.getBoundingClientRect();
-        const mouseX = event.clientX - rect.left;
-        const mouseY = event.clientY - rect.top;
+        const world = screenToWorld(event.clientX - rect.left, event.clientY - rect.top);
 
         const hoverTornado = simulationState.tornadoes.find(t => {
-            return t.isActive && Math.sqrt((mouseX - t.x)**2 + (mouseY - t.y)**2) < t.width * 1.5;
+            return t.isActive && Math.sqrt((world.x - t.x)**2 + (world.y - t.y)**2) < t.width * 1.5;
         });
 
         if (hoverTornado) {
@@ -2603,6 +2650,18 @@ function resetSimulation() {
     simulationState.isCAPERandomizing = false;
     simulationState.lastStormActivityTime = simulationState.time; // Reset activity time
 
+    // Reset clock
+    simulationState.simClock = 720;
+    simulationState._clockFrameCounter = 0;
+
+    // Reset camera
+    simulationState.camera.x = 0;
+    simulationState.camera.y = 0;
+    simulationState.camera.zoom = 1;
+    simulationState._dragStartX = null;
+    simulationState._dragStartY = null;
+    simulationState._isDragging = false;
+
     // Re-initialize CAPE to a new random value for a fresh start
     simulationState.targetCAPE = MIN_CAPE + Math.random() * (MAX_CAPE - MIN_CAPE);
     simulationState.initialCAPEDuringTransition = simulationState.targetCAPE; // Start at target for first frame
@@ -2638,6 +2697,12 @@ function resetSimulation() {
         autoRunBtn.classList.remove('toggle-on');
         autoRunBtn.textContent = 'Auto-run (OFF)';
     }
+
+    // Hide EAS overlay and footer
+    document.getElementById('easOverlay').style.display = 'none';
+    document.getElementById('easOverlay').classList.remove('dismissed');
+    document.getElementById('easFooterBar').style.display = 'none';
+    document.getElementById('easFooterBar').classList.remove('expired');
 
     // Stop any playing sounds
     if (isTornadoSirenPlaying) {
@@ -3057,6 +3122,22 @@ class EASAlertSystem {
         this.queue = [];
         this.playing = false;
         this.bannerTimeout = null;
+        this.audioCtx = null;
+        this.warningBuffer = null;
+        this.overlayVisible = false;
+
+        this.initAudio();
+    }
+
+    async initAudio() {
+        try {
+            this.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            const res = await fetch('audio/noaa_warning.mp3');
+            const arr = await res.arrayBuffer();
+            this.warningBuffer = await this.audioCtx.decodeAudioData(arr);
+        } catch (e) {
+            console.warn('Failed to load EAS tones:', e);
+        }
     }
 
     async queueAlert(type, tornado) {
@@ -3065,6 +3146,23 @@ class EASAlertSystem {
         if (!this.playing) {
             await this.processQueue();
         }
+    }
+
+    playSegment(ctx, buffer, startSec, endSec, gainValue) {
+        return new Promise((resolve) => {
+            const source = ctx.createBufferSource();
+            source.buffer = buffer;
+            if (gainValue !== undefined && gainValue !== 1) {
+                const gain = ctx.createGain();
+                gain.gain.value = gainValue;
+                source.connect(gain);
+                gain.connect(ctx.destination);
+            } else {
+                source.connect(ctx.destination);
+            }
+            source.start(0, startSec, endSec - startSec);
+            source.onended = resolve;
+        });
     }
 
     async processQueue() {
@@ -3077,42 +3175,57 @@ class EASAlertSystem {
 
         this.showBanner(alert);
 
+        if (!this.audioCtx || !this.warningBuffer) {
+            this.hideBannerAfterDelay(6000);
+            setTimeout(() => this.processQueue(), 1000);
+            return;
+        }
+
         try {
+            if (this.audioCtx.state === 'suspended') {
+                await this.audioCtx.resume();
+            }
+
+            // 1. Play header tones (0 to 14.5s)
+            await this.playSegment(this.audioCtx, this.warningBuffer, 0, 14.5);
+
+            // 2. Play EAS TOM voice (TTS with 2.5x volume gain)
             const res = await fetch('/.netlify/functions/eas-tts', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ text: alert.text })
             });
 
-            if (!res.ok) throw new Error('TTS proxy error');
+            if (res.ok) {
+                const blob = await res.blob();
+                const ttsBuffer = await blob.arrayBuffer();
+                const ttsAudioBuffer = await this.audioCtx.decodeAudioData(ttsBuffer);
+                await this.playSegment(this.audioCtx, ttsAudioBuffer, 0, ttsAudioBuffer.duration, 2.5);
+            }
 
-            const blob = await res.blob();
-            const url = URL.createObjectURL(blob);
-            const audio = new Audio(url);
+            // 3. Wait 1 second silence
+            await new Promise(r => setTimeout(r, 1000));
 
-            audio.onended = () => {
-                URL.revokeObjectURL(url);
-                this.hideBanner();
-                setTimeout(() => this.processQueue(), 600);
-            };
-            audio.onerror = () => {
-                URL.revokeObjectURL(url);
-                this.hideBanner();
-                setTimeout(() => this.processQueue(), 600);
-            };
+            // 4. Play ender tones (14.5s to end)
+            await this.playSegment(this.audioCtx, this.warningBuffer, 14.5, this.warningBuffer.duration);
 
-            await audio.play();
-        } catch {
-            this.hideBannerAfterDelay(6000);
-            setTimeout(() => this.processQueue(), 1000);
+        } catch (e) {
+            console.warn('EAS playback error:', e);
         }
+
+        this.hideBanner();
+        setTimeout(() => this.processQueue(), 600);
     }
 
     showBanner(alert) {
         const overlay = document.getElementById('easOverlay');
+        const footerBar = document.getElementById('easFooterBar');
         const header = document.getElementById('easHeaderText');
         const message = document.getElementById('easBodyMessage');
-        const footer = document.getElementById('easFooterScroll');
+        const footerScroll = document.getElementById('easFooterScroll');
+
+        overlay.classList.remove('dismissed');
+        this.overlayVisible = true;
 
         let headerText;
         switch (alert.type) {
@@ -3125,17 +3238,43 @@ class EASAlertSystem {
 
         header.textContent = headerText;
         message.textContent = alert.text;
-        footer.textContent = ' *** ' + alert.text + ' *** ';
-        overlay.style.display = 'flex';
+
+        const endMinutes = simulationState.simClock + 30;
+
+        if (alert.type === 'expired') {
+            footerScroll.textContent = ' THE TORNADO WARNING HAS EXPIRED. The immediate danger has passed. ';
+            footerBar.style.display = 'flex';
+            footerBar.classList.remove('expired');
+            // Auto-hide expired footer after 10 seconds
+            setTimeout(() => {
+                footerBar.classList.add('expired');
+                setTimeout(() => { footerBar.style.display = 'none'; }, 1000);
+            }, 10000);
+        } else {
+            footerScroll.textContent = ` *** ${headerText} — ${alert.text} *** THIS WARNING IN EFFECT UNTIL ${formatSimClock(endMinutes)}. *** `;
+            overlay.style.display = 'flex';
+            footerBar.style.display = 'flex';
+            footerBar.classList.remove('expired');
+        }
     }
 
     hideBanner() {
         const overlay = document.getElementById('easOverlay');
         overlay.style.display = 'none';
+        this.overlayVisible = false;
         if (this.bannerTimeout) {
             clearTimeout(this.bannerTimeout);
             this.bannerTimeout = null;
         }
+    }
+
+    dismissOverlay() {
+        const overlay = document.getElementById('easOverlay');
+        overlay.classList.add('dismissed');
+        this.overlayVisible = false;
+        setTimeout(() => {
+            overlay.style.display = 'none';
+        }, 300);
     }
 
     hideBannerAfterDelay(ms) {
@@ -3147,9 +3286,8 @@ class EASAlertSystem {
         const neighborhood = getNeighborhood(tornado.x, tornado.y);
         const dir = getCompassDirection(tornado.direction);
         const speed = Math.max(10, (tornado.speed * 60 * 5)).toFixed(0);
-        const now = new Date();
-        const time = now.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
-        const until = new Date(now.getTime() + 30 * 60 * 1000).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+        const time = formatSimClock(simulationState.simClock);
+        const until = formatSimClock(simulationState.simClock + 30);
 
         switch (type) {
             case 'warning':
@@ -3187,17 +3325,31 @@ function animate() {
     // Update simulation time
     if (!simulationState.paused) {
         simulationState.time += simulationState.simSpeed;
+
+        // Update simulation clock (1 sim minute per 60 real frames)
+        simulationState._clockFrameCounter += simulationState.simSpeed;
+        if (simulationState._clockFrameCounter >= 60) {
+            simulationState._clockFrameCounter -= 60;
+            simulationState.simClock++;
+        }
+    }
+
+    // Update clock display
+    const clockEl = document.getElementById('clockDisplay');
+    if (clockEl) {
+        clockEl.textContent = formatSimClock(simulationState.simClock);
     }
 
     // Handle tornado warning sounds
     handleTornadoWarningSounds();
 
-    // Auto-run: Spawn supercells if map is empty for too long
+    // Auto-run: Spawn supercells when no tornado is active and storms have decayed
     if (simulationState.autoRun) {
-        const activeElementsCount = simulationState.storms.length + simulationState.tornadoes.length;
-        if (activeElementsCount === 0 && (simulationState.time - simulationState.lastStormActivityTime) >= AUTORUN_SPAWN_COOLDOWN_FRAMES) {
-            spawnSupercell(true); // Spawn supercell in auto-run mode
-            simulationState.lastStormActivityTime = simulationState.time; // Reset activity time
+        const hasActiveTornado = simulationState.tornadoes.some(t => t.isActive);
+        const hasActiveStorm = simulationState.storms.some(s => s.intensity > 0.05);
+        if (!hasActiveTornado && !hasActiveStorm && (simulationState.time - simulationState.lastStormActivityTime) >= AUTORUN_SPAWN_COOLDOWN_FRAMES) {
+            spawnSupercell(true);
+            simulationState.lastStormActivityTime = simulationState.time;
         }
     }
 
@@ -3298,6 +3450,11 @@ function animate() {
     // Clear canvas
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
+    // Apply camera transform for pan/zoom
+    ctx.save();
+    ctx.translate(-simulationState.camera.x * simulationState.camera.zoom, -simulationState.camera.y * simulationState.camera.zoom);
+    ctx.scale(simulationState.camera.zoom, simulationState.camera.zoom);
+
     // Draw city map background
     drawCityMap();
 
@@ -3392,6 +3549,10 @@ function animate() {
     // Draw visualization overlays
     drawWindVectors();
     drawVorticityField();
+
+    // Restore camera transform before drawing UI/overlays
+    ctx.restore();
+
     drawRadar();
 
     // Update UI elements
@@ -3439,6 +3600,73 @@ window.onload = function () {
     simulationAreaDiv.addEventListener('click', handleSimulationAreaClick);
     simulationAreaDiv.addEventListener('mousemove', handleSimulationAreaMouseMove);
     simulationAreaDiv.addEventListener('contextmenu', handleSimulationAreaRightClick); // Add right-click listener
+
+    // Pan/zoom mouse handlers
+    simulationAreaDiv.addEventListener('mousedown', (e) => {
+        if (e.button !== 0) return;
+        if (e.target.closest('.tornado-info')) return;
+        simulationState._dragStartX = e.clientX;
+        simulationState._dragStartY = e.clientY;
+        simulationState._isDragging = false;
+    });
+
+    document.addEventListener('mousemove', (e) => {
+        if (simulationState._dragStartX === null) return;
+        if (e.buttons !== 1) {
+            simulationState._dragStartX = null;
+            simulationState._dragStartY = null;
+            simulationState._isDragging = false;
+            return;
+        }
+        const dx = e.clientX - simulationState._dragStartX;
+        const dy = e.clientY - simulationState._dragStartY;
+        if (!simulationState._isDragging) {
+            if (Math.hypot(dx, dy) > 3) {
+                simulationState._isDragging = true;
+            } else {
+                return;
+            }
+        }
+        simulationState.camera.x -= dx / simulationState.camera.zoom;
+        simulationState.camera.y -= dy / simulationState.camera.zoom;
+        simulationState._dragStartX = e.clientX;
+        simulationState._dragStartY = e.clientY;
+        e.preventDefault();
+    });
+
+    document.addEventListener('mouseup', () => {
+        simulationState._dragStartX = null;
+        simulationState._dragStartY = null;
+    });
+
+    simulationAreaDiv.addEventListener('wheel', (e) => {
+        e.preventDefault();
+        const rect = canvas.getBoundingClientRect();
+        const mx = e.clientX - rect.left;
+        const my = e.clientY - rect.top;
+        const oldZoom = simulationState.camera.zoom;
+        const delta = e.deltaY > 0 ? -0.15 : 0.15;
+        const newZoom = Math.max(0.25, Math.min(4, oldZoom + delta));
+        const wx = mx / oldZoom + simulationState.camera.x;
+        const wy = my / oldZoom + simulationState.camera.y;
+        simulationState.camera.zoom = newZoom;
+        simulationState.camera.x = wx - mx / newZoom;
+        simulationState.camera.y = wy - my / newZoom;
+    }, { passive: false });
+
+    // EAS close button
+    document.getElementById('easCloseBtn').addEventListener('click', () => {
+        if (easAlertSystem) easAlertSystem.dismissOverlay();
+    });
+
+    // R key to reset camera
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'r' || e.key === 'R') {
+            simulationState.camera.x = 0;
+            simulationState.camera.y = 0;
+            simulationState.camera.zoom = 1;
+        }
+    });
 
     resizeCanvas(); // Set initial canvas size and base locations
     
